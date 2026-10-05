@@ -1,0 +1,11 @@
+id_producto,nombre,categoria,precio
+p001,Laptop 14 pulgadas,computo,2400
+p002,Mouse inalámbrico,perifericos,45
+p003,Teclado mecánico,perifericos,120
+p004,Monitor 24 pulgadas,monitores,520
+p005,Auriculares con micrófono,audio,95
+p006,Webcam HD,perifericos,110
+p007,Mochila para laptop,accesorios,85
+p008,Disco externo 1TB,almacenamiento,230
+p009,Hub USB-C,accesorios,60
+p010,Silla ergonómica,mobiliario,450
