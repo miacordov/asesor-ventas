@@ -1,23 +1,26 @@
 """Puente entre Python y el motor lógico (SWI-Prolog vía pyswip).
 
-Las reglas viven en prolog/reglas.pl y prolog/agenda.pl; este módulo solo traduce:
+Las reglas viven en prolog/reglas.pl, agenda.pl y pedido.pl; este módulo solo traduce:
     Venta (objetos)        ->  hechos compro/2
     PerfilCliente (objeto) ->  hechos n_compras/2, dias_sin_comprar/2, umbral/2
-    soluciones Prolog      ->  objetos Recomendacion y acciones
+    Producto (objeto)      ->  hechos producto/3 (precio en centavos)
+    soluciones Prolog      ->  objetos Recomendacion, acciones y pedidos
 """
 
+import math
 from abc import ABC, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from pyswip import Prolog
 
 from ventas.funcional import UMBRAL_FRECUENTE, PerfilCliente
-from ventas.modelos import Recomendacion, Venta, _validar_id
+from ventas.modelos import Producto, Recomendacion, Venta, _validar_id
 
 RUTA_PROLOG = Path(__file__).resolve().parent.parent / "prolog"
 RUTA_REGLAS = RUTA_PROLOG / "reglas.pl"
 RUTA_AGENDA = RUTA_PROLOG / "agenda.pl"
+RUTA_PEDIDO = RUTA_PROLOG / "pedido.pl"
 DIAS_INACTIVIDAD = 30  # más de estos días sin comprar = cliente inactivo
 
 
@@ -50,6 +53,30 @@ class MotorLogico(ABC):
         """(id_cliente, tipo, motivos) que el motor deduce, en orden estable."""
 
 
+class MotorPedidos(ABC):
+    """Contrato para motores que arman pedidos por búsqueda de combinaciones."""
+
+    @abstractmethod
+    def cargar_catalogo(self, productos: Iterable[Producto]) -> None:
+        """Reemplaza los productos disponibles para armar pedidos."""
+
+    @abstractmethod
+    def armar_pedidos(
+        self,
+        presupuesto: float,
+        categorias: Sequence[str],
+        id_cliente: str | None = None,
+        max_combinaciones: int = 200,
+    ) -> tuple[tuple[str, ...], ...]:
+        """Combinaciones válidas (ids ordenados), un producto por categoría pedida,
+        sin pasarse del presupuesto. Con id_cliente excluye lo que ya compró."""
+
+
+def _a_centavos(monto: float) -> int:
+    """Los precios viajan a Prolog como enteros: sin errores de decimales."""
+    return round(monto * 100)
+
+
 def pares_compra(ventas: Iterable[Venta]) -> tuple[tuple[str, str], ...]:
     """Pares (cliente, producto) sin repetir, en orden estable.
 
@@ -59,14 +86,16 @@ def pares_compra(ventas: Iterable[Venta]) -> tuple[tuple[str, str], ...]:
     return tuple(sorted({(v.id_cliente, v.id_producto) for v in ventas}))
 
 
-class PuenteProlog(MotorLogico):
+class PuenteProlog(MotorLogico, MotorPedidos):
     """Motor lógico real: consulta SWI-Prolog mediante pyswip.
 
     Nota: SWI-Prolog es un único motor por proceso. Dos instancias comparten
     la misma base de hechos, por eso cargar_compras() siempre limpia antes.
     """
 
-    def __init__(self, rutas_reglas: Iterable[Path | str] = (RUTA_REGLAS, RUTA_AGENDA)) -> None:
+    def __init__(
+        self, rutas_reglas: Iterable[Path | str] = (RUTA_REGLAS, RUTA_AGENDA, RUTA_PEDIDO)
+    ) -> None:
         self._prolog = Prolog()
         for ruta in rutas_reglas:
             self._prolog.consult(str(ruta))
@@ -125,6 +154,48 @@ class PuenteProlog(MotorLogico):
         soluciones = self._prolog.query("accion(C, T, M)")
         resultado = [(str(s["C"]), str(s["T"]), tuple(str(m) for m in s["M"])) for s in soluciones]
         return tuple(sorted(resultado))
+
+    def cargar_catalogo(self, productos: Iterable[Producto]) -> None:
+        list(self._prolog.query("retractall(producto(_, _, _))"))
+        for p in productos:
+            self._prolog.assertz(
+                f"producto({p.id_producto}, {p.categoria}, {_a_centavos(p.precio)})"
+            )
+
+    def armar_pedidos(
+        self,
+        presupuesto: float,
+        categorias: Sequence[str],
+        id_cliente: str | None = None,
+        max_combinaciones: int = 200,
+    ) -> tuple[tuple[str, ...], ...]:
+        if (
+            isinstance(presupuesto, bool)
+            or not isinstance(presupuesto, (int, float))
+            or not math.isfinite(presupuesto)
+            or presupuesto <= 0
+        ):
+            raise ValueError(f"presupuesto debe ser un número mayor que 0, recibido: {presupuesto!r}")
+        categorias = tuple(categorias)
+        if not categorias:
+            raise ValueError("Indique al menos una categoría.")
+        for categoria in categorias:
+            _validar_id(categoria, "categoria")
+        if id_cliente is not None:
+            _validar_id(id_cliente, "id_cliente")
+        if isinstance(max_combinaciones, bool) or not isinstance(max_combinaciones, int) or max_combinaciones < 1:
+            raise ValueError(f"max_combinaciones debe ser un entero >= 1, recibido: {max_combinaciones!r}")
+
+        lista = "[" + ", ".join(categorias) + "]"
+        centavos = _a_centavos(presupuesto)
+        if id_cliente is None:
+            consulta = f"armar({centavos}, {lista}, P, T)"
+        else:
+            consulta = f"armar_para({id_cliente}, {centavos}, {lista}, P, T)"
+        soluciones = self._prolog.query(consulta, maxresult=max_combinaciones)
+        # Dos categorías iguales producen la misma combinación en distinto orden.
+        combinaciones = {tuple(sorted(str(id_) for id_ in s["P"])) for s in soluciones}
+        return tuple(sorted(combinaciones))
 
     def _una_solucion(self, consulta: str) -> dict:
         # maxresult=1 cierra la consulta; una consulta abierta bloquea las siguientes.
