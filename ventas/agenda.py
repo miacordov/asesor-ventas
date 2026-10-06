@@ -25,10 +25,17 @@ from ventas.modelos import Cliente, Producto, Recomendacion, Venta, _validar_id
 _FRASES: dict[str, Callable[[PerfilCliente], str]] = {
     "frecuente": lambda p: f"compró {p.n_compras} veces",
     "inactivo": lambda p: f"lleva {p.dias_sin_comprar} días sin comprar",
-    "reciente": lambda p: f"su última compra fue hace {p.dias_sin_comprar} días",
+    "reciente": lambda p: f"su última compra fue {_hace(p.dias_sin_comprar)}",
     "no_frecuente": lambda p: f"tiene pocas compras ({p.n_compras})",
     "similares": lambda p: "clientes con compras parecidas ya llevaron otros productos",
 }
+
+
+def _hace(dias: int) -> str:
+    """0 -> 'hoy', 1 -> 'hace 1 día', 4 -> 'hace 4 días'."""
+    if dias == 0:
+        return "hoy"
+    return "hace 1 día" if dias == 1 else f"hace {dias} días"
 
 
 def _frase(motivo: str, perfil: PerfilCliente) -> str:

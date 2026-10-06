@@ -1,8 +1,11 @@
 """Pruebas de la interfaz con el probador oficial de Streamlit (AppTest).
 
-AppTest ejecuta app.py sin abrir un navegador. Cada ejecución corre en un hilo
-distinto, así que estas pruebas también verifican que PySwip funciona bajo el
-modelo de hilos de Streamlit.
+AppTest ejecuta la aplicación sin abrir un navegador. Cada ejecución corre en un
+hilo distinto, igual que en Streamlit real, así que estas pruebas también
+verifican que PySwip y SQLite funcionan bajo ese modelo de hilos.
+
+Cada prueba usa una base de datos en memoria nueva (se llena con los datos de
+ejemplo), de modo que nada depende del orden ni toca la base real.
 """
 
 import shutil
@@ -17,233 +20,484 @@ from streamlit.testing.v1 import AppTest
 RAIZ = Path(__file__).resolve().parent.parent
 APP = str(RAIZ / "app.py")
 TIEMPO = 60
+PAGINAS = ["agenda", "pedido", "resumen", "clientes", "productos", "registro_ventas"]
 
 
-def abrir(pagina=None) -> AppTest:
+@pytest.fixture(autouse=True)
+def entorno_limpio(monkeypatch):
+    monkeypatch.setenv("ASESOR_DB", ":memory:")
+    st.cache_resource.clear()
+    yield
+    st.cache_resource.clear()
+
+
+def abrir(pagina: str | None = None) -> AppTest:
     at = AppTest.from_file(APP, default_timeout=TIEMPO).run()
     if pagina:
-        at.sidebar.radio[0].set_value(pagina).run()
+        at.switch_page(f"paginas/{pagina}.py").run()
     return at
 
 
-def sin_excepciones(at):
+def ok(at: AppTest) -> bool:
     return [e.value for e in at.exception] == []
 
 
-def textos(elementos):
-    return [e.value for e in elementos]
+def boton(at: AppTest, etiqueta: str):
+    return next(b for b in at.button if b.label == etiqueta)
+
+
+def tarjetas(at: AppTest) -> list[str]:
+    return [m.value[5:] for m in at.markdown if m.value.startswith("#### ")]
+
+
+def indicadores(at: AppTest) -> dict[str, str]:
+    return {m.label: m.value for m in at.metric}
+
+
+def tabla(at: AppTest, indice: int = 0):
+    return at.dataframe[indice].value
+
+
+def exito(at: AppTest) -> list[str]:
+    return [s.value for s in at.success]
+
+
+def errores(at: AppTest) -> list[str]:
+    return [e.value for e in at.error]
 
 
 # =====================================================================
 # Arranque y navegación
 # =====================================================================
-def test_la_app_inicia_sin_errores():
+def test_la_app_inicia_en_la_agenda_sin_errores():
     at = abrir()
-    assert sin_excepciones(at)
-    assert at.error == []
-    assert textos(at.header) == ["Agenda de hoy"]
+    assert ok(at) and errores(at) == []
+    assert "Agenda de hoy" in at.title[0].value
 
 
-def test_la_barra_lateral_ofrece_las_cuatro_paginas():
+@pytest.mark.parametrize("pagina", PAGINAS)
+def test_cada_pagina_se_muestra_sin_errores(pagina):
+    at = abrir(pagina)
+    assert ok(at), pagina
+    assert errores(at) == []
+
+
+def test_navegar_muchas_veces_no_falla():
+    """Cada ejecución corre en un hilo distinto: PySwip y SQLite deben aguantarlo."""
     at = abrir()
-    assert list(at.sidebar.radio[0].options) == ["Agenda de hoy", "Arma mi pedido", "Clientes", "Resumen"]
+    for pagina in ("pedido", "agenda", "resumen", "agenda", "clientes", "registro_ventas", "agenda"):
+        at.switch_page(f"paginas/{pagina}.py").run()
+        assert ok(at), pagina
+    assert len(tarjetas(at)) == 7
+
+
+def test_la_fecha_de_referencia_por_defecto_es_la_de_la_demostracion():
+    at = abrir()
     assert at.sidebar.date_input[0].value == date(2026, 10, 5)
 
 
-@pytest.mark.parametrize(
-    ("pagina", "titulo"),
-    [
-        ("Agenda de hoy", "Agenda de hoy"),
-        ("Arma mi pedido", "Arma mi pedido"),
-        ("Clientes", "Clientes"),
-        ("Resumen", "Resumen de ventas"),
-    ],
-)
-def test_cada_pagina_se_muestra_sin_errores(pagina, titulo):
-    at = abrir(pagina)
-    assert sin_excepciones(at)
-    assert textos(at.header) == [titulo]
-
-
-def test_varias_ejecuciones_seguidas_no_fallan():
-    """Cada ejecución corre en un hilo distinto: PySwip debe aguantarlo."""
+def test_datos_de_ejemplo_invalidos_muestran_un_mensaje_claro(tmp_path, monkeypatch):
+    for nombre in ("clientes.csv", "productos.csv"):
+        shutil.copy(RAIZ / "datos" / nombre, tmp_path / nombre)
+    (tmp_path / "ventas.csv").write_text(
+        "id_venta,id_cliente,id_producto,cantidad,precio_unitario,fecha\nv001,c001,p001,dos,10,2026-09-01\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("interfaz.comun.CARPETA_CSV", tmp_path)
     at = abrir()
-    for pagina in ("Arma mi pedido", "Agenda de hoy", "Resumen", "Agenda de hoy", "Clientes", "Agenda de hoy"):
-        at.sidebar.radio[0].set_value(pagina).run()
-        assert sin_excepciones(at), pagina
-    assert len(at.subheader) == 7
+    assert ok(at)
+    assert len(errores(at)) == 1
+    assert "No se pudieron cargar los datos" in errores(at)[0] and "ventas.csv, fila 2" in errores(at)[0]
+
+
+def test_los_datos_persisten_al_reiniciar_la_aplicacion(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASESOR_DB", str(tmp_path / "negocio.db"))
+    at = abrir("clientes")
+    at.text_input(key="nc_nombre_0").set_value("Ana Torres").run()
+    boton(at, "Registrar cliente").click().run()
+    assert any("c009" in t for t in exito(at))
+    st.cache_resource.clear()  # simula cerrar y volver a abrir la aplicación
+    reabierta = abrir("clientes")
+    assert "Ana Torres" in list(tabla(reabierta)["Cliente"])
+    assert len(tabla(reabierta)) == 9
 
 
 # =====================================================================
 # Agenda
 # =====================================================================
 def test_agenda_muestra_los_siete_contactos_en_orden():
-    at = abrir()
-    assert textos(at.subheader) == [
-        "1. Juan Pérez · Reactivar cliente",
-        "2. Pedro Salas · Reactivar cliente",
-        "3. María Torres · Fidelizar cliente",
-        "4. Ana Ríos · Fidelizar cliente",
-        "5. Lucía Mendoza · Fidelizar cliente",
-        "6. Carlos Ruiz · Ofrecer productos complementarios",
-        "7. Luis Vega · Ofrecer productos complementarios",
+    assert tarjetas(abrir()) == [
+        "1. Juan Pérez",
+        "2. Pedro Salas",
+        "3. María Torres",
+        "4. Ana Ríos",
+        "5. Lucía Mendoza",
+        "6. Carlos Ruiz",
+        "7. Luis Vega",
     ]
 
 
+def test_agenda_indicadores_calculados_a_mano():
+    assert indicadores(abrir()) == {
+        "Contactos de hoy": "7",
+        "Por reactivar": "2",
+        "Por fidelizar": "3",
+        "Complementar": "2",
+        "Valor en pedidos sugeridos": "S/ 1,770.50",  # 607.50+261+382.50+108+76.50+110+225
+    }
+
+
 def test_agenda_no_incluye_a_rosa_sin_compras():
-    at = abrir()
-    assert not any("Rosa" in s for s in textos(at.subheader))
+    assert not any("Rosa" in t for t in tarjetas(abrir()))
 
 
-def test_cada_tarjeta_tiene_su_boton_de_whatsapp_con_el_texto_del_mensaje():
-    at = abrir()
-    botones = at.get("link_button")
+def test_cada_tarjeta_tiene_su_boton_de_whatsapp_con_el_mensaje():
+    botones = abrir().get("link_button")
     assert len(botones) == 7
-    for boton in botones:
-        assert boton.proto.label == "Abrir en WhatsApp"
-        url = urlparse(boton.proto.url)
+    for b in botones:
+        url = urlparse(b.proto.url)
         assert url.netloc == "wa.me" and url.path[1:].isdigit()
         assert parse_qs(url.query)["text"][0].startswith("Hola ")
-    primer_texto = parse_qs(urlparse(botones[0].proto.url).query)["text"][0]
-    assert "Juan" in primer_texto and "S/ 607.50" in primer_texto
+    assert "S/ 607.50" in parse_qs(urlparse(botones[0].proto.url).query)["text"][0]
 
 
-def test_el_motivo_de_cada_tarjeta_es_visible():
+def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
+    textos = [m.value for m in abrir().markdown]
+    assert "Compró 3 veces, lleva 40 días sin comprar" in textos
+    assert "**Total S/ 607.50** · ~~S/ 675.00~~ con 10 % de descuento" in textos
+    assert "**Total S/ 110.00**" in textos  # Carlos es regular: sin descuento
+
+
+def test_cada_tarjeta_tiene_porque_y_mensaje():
+    etiquetas = [p.proto.popover.label for p in abrir().get("popover")]
+    assert etiquetas.count("¿Por qué?") == 7 and etiquetas.count("Mensaje") == 7
+
+
+def test_filtrar_la_agenda_por_tipo_de_accion():
     at = abrir()
-    contenido = textos(at.markdown)
-    assert "Compró 3 veces, lleva 40 días sin comprar" in contenido
-    assert "Compró 5 veces, su última compra fue hace 4 días" in contenido
-
-
-def test_cada_tarjeta_tiene_sus_tres_secciones():
-    at = abrir()
-    etiquetas = [e.label for e in at.expander]
-    assert etiquetas.count("¿Por qué?") == 7
-    assert etiquetas.count("Mensaje para WhatsApp") == 7
-    assert sum(e.startswith("Pedido sugerido") for e in etiquetas) == 7
-    assert "Pedido sugerido · S/ 607.50" in etiquetas
-
-
-def test_la_tarjeta_explica_las_reglas_y_los_umbrales():
-    at = abrir()
-    contenido = textos(at.markdown)
-    assert any("`frecuente`" in t and "`inactivo`" in t for t in contenido)
-    assert any("desde 3 compras" in c and "más de 30 días" in c for c in textos(at.caption))
+    at.get("button_group")[0].set_value("Reactivar").run()
+    assert ok(at)
+    assert tarjetas(at) == ["1. Juan Pérez", "2. Pedro Salas"]
+    at.get("button_group")[0].set_value("Complementar").run()
+    assert tarjetas(at) == ["6. Carlos Ruiz", "7. Luis Vega"]  # conservan su posición en la agenda
 
 
 def test_la_agenda_cambia_con_la_fecha_de_referencia():
     at = abrir()
     at.sidebar.date_input[0].set_value(date(2026, 10, 20)).run()
-    assert sin_excepciones(at)
-    # Ana (última compra el 10-sep) pasa a inactiva: 40 días, tercer lugar entre los "reactivar".
-    assert "3. Ana Ríos · Reactivar cliente" in textos(at.subheader)
+    assert ok(at)
+    assert indicadores(at)["Por reactivar"] == "3"  # Ana (última compra el 10-sep) ya está inactiva
+    assert "3. Ana Ríos" in tarjetas(at)
 
 
-def test_fecha_anterior_a_las_ventas_muestra_un_error_claro():
-    at = abrir()
+@pytest.mark.parametrize("pagina", ["agenda", "clientes", "registro_ventas"])
+def test_fecha_anterior_a_las_ventas_muestra_un_error_claro(pagina):
+    at = abrir(pagina)
     at.sidebar.date_input[0].set_value(date(2026, 5, 1)).run()
-    assert sin_excepciones(at)
-    assert len(at.error) == 1 and "anterior a la última venta" in at.error[0].value
-    assert "03/10/2026" in at.error[0].value
-    assert at.subheader == []
-
-
-def test_el_error_de_fecha_tambien_aplica_a_clientes():
-    at = abrir("Clientes")
-    at.sidebar.date_input[0].set_value(date(2026, 5, 1)).run()
-    assert sin_excepciones(at)
-    assert len(at.error) == 1 and at.dataframe == []
+    assert ok(at)
+    assert len(errores(at)) == 1 and "anterior a la última venta" in errores(at)[0] and "03/10/2026" in errores(at)[0]
+    assert tarjetas(at) == []
 
 
 # =====================================================================
 # Arma mi pedido
 # =====================================================================
 def test_pedido_por_defecto_calculado_a_mano():
-    at = abrir("Arma mi pedido")
-    assert textos(at.markdown) == [
+    at = abrir("pedido")
+    opciones = [m.value for m in at.markdown if m.value.startswith("**Opción")]
+    assert opciones == [
         "**Opción 1 · S/ 195.00** · sobran S/ 5.00",
         "**Opción 2 · S/ 180.00** · sobran S/ 20.00",
         "**Opción 3 · S/ 170.00** · sobran S/ 30.00",
         "**Opción 4 · S/ 130.00** · sobran S/ 70.00",
         "**Opción 5 · S/ 105.00** · sobran S/ 95.00",
     ]
-    assert len(at.dataframe) == 5
+    assert "5 combinaciones" in [s.value for s in at.subheader]
 
 
-def test_pedido_la_mejor_opcion_incluye_webcam_y_mochila():
-    at = abrir("Arma mi pedido")
-    productos = list(at.dataframe[0].value["Producto"])
-    assert productos == ["Webcam HD", "Mochila para laptop"]
+def test_pedido_la_mejor_opcion_es_webcam_y_mochila():
+    listas = [m.value for m in abrir("pedido").markdown if m.value.startswith("- ")]
+    assert listas[0] == "- Webcam HD · **S/ 110.00**\n- Mochila para laptop · **S/ 85.00**"
 
 
 @pytest.mark.parametrize(("presupuesto", "combinaciones"), [(105.0, 1), (104.0, 0), (130.0, 2), (200.0, 5)])
 def test_el_presupuesto_limita_las_combinaciones(presupuesto, combinaciones):
-    at = abrir("Arma mi pedido")
-    at.number_input[0].set_value(presupuesto).run()
-    assert sin_excepciones(at)
-    assert len(at.dataframe) == combinaciones
+    at = abrir("pedido")
+    at.number_input(key="presupuesto_pedido").set_value(presupuesto).run()
+    assert ok(at)
+    assert len([m for m in at.markdown if m.value.startswith("**Opción")]) == combinaciones
     assert len(at.warning) == (1 if combinaciones == 0 else 0)
 
 
 def test_sin_categorias_pide_elegir_al_menos_una():
-    at = abrir("Arma mi pedido")
-    at.multiselect[0].set_value([]).run()
-    assert sin_excepciones(at)
-    assert "Elige al menos una categoría." in textos(at.info)
-    assert at.dataframe == []
-
-
-def test_las_categorias_se_muestran_con_tildes():
-    at = abrir("Arma mi pedido")
-    opciones = at.multiselect[0].options
-    assert "Periféricos" in opciones and "Cómputo" in opciones
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value([]).run()
+    assert ok(at)
+    assert any("Elige al menos una categoría" in i.value for i in at.info)
 
 
 # =====================================================================
-# Clientes y resumen
+# Administración: resumen
 # =====================================================================
-def test_clientes_muestra_los_ocho_con_su_tipo():
-    at = abrir("Clientes")
-    tabla = at.dataframe[0].value
-    assert len(tabla) == 8
-    tipos = dict(zip(tabla["Cliente"], tabla["Tipo"], strict=True))
-    assert tipos["Juan Pérez"] == "Frecuente" and tipos["Carlos Ruiz"] == "Regular"
-    juan = tabla[tabla["Cliente"] == "Juan Pérez"].iloc[0]
-    assert (juan["Compras"], juan["Días sin comprar"], juan["Ticket promedio (S/)"]) == (3, 40, 883.33)
+def test_resumen_indicadores_calculados_a_mano():
+    # 22 compras (días distintos por cliente); 8455 / 22 = 384.32; top 3 = (3235+2650+1195)/8455 = 83.7 %
+    assert indicadores(abrir("resumen")) == {
+        "Ventas totales": "S/ 8,455",
+        "Compras": "22",
+        "Ticket promedio": "S/ 384",
+        "Clientes con compras": "7",
+        "Top 3 clientes": "84 %",
+    }
 
 
-def test_clientes_no_expone_telefonos():
-    at = abrir("Clientes")
-    assert not any("tel" in c.lower() for c in at.dataframe[0].value.columns)
+def test_resumen_tablas():
+    at = abrir("resumen")
+    por_mes, por_categoria, segmentos = tabla(at, 0), tabla(at, 1), tabla(at, 2)
+    assert list(por_mes["mes"]) == ["2026-06", "2026-07", "2026-08", "2026-09", "2026-10"]
+    assert por_mes["variacion_pct"].iloc[0] == "—" and por_mes["variacion_pct"].iloc[1] == "+278.4 %"
+    assert por_categoria["categoria"].iloc[0] == "Cómputo" and por_categoria["ventas"].iloc[0] == 4750.0
+    assert list(segmentos["segmento"]) == ["Alto", "Medio", "Bajo", "Sin compras"]
+    assert list(segmentos["clientes"]) == [3, 2, 2, 1]
 
 
-def test_resumen_muestra_los_indicadores_calculados_a_mano():
-    at = abrir("Resumen")
-    assert textos(at.metric) == ["S/ 8,455.00", "S/ 281.83", "30", "8"]
-    assert textos(at.subheader) == ["Ventas por mes", "Ventas por categoría", "Productos más vendidos"]
+def test_resumen_ofrece_descargar_las_ventas():
+    assert len(abrir("resumen").get("download_button")) == 1
+
+
+def test_restablecer_los_datos_de_ejemplo_descarta_los_cambios():
+    at = abrir("registro_ventas")
+    boton(at, "Registrar venta").click().run()
+    at.switch_page("paginas/resumen.py").run()
+    assert indicadores(at)["Ventas totales"] == "S/ 10,855"
+    at.checkbox(key="confirmar_restablecer").check().run()
+    boton(at, "Restablecer datos de ejemplo").click().run()
+    assert "Datos de ejemplo restablecidos." in exito(at)
+    assert indicadores(at)["Ventas totales"] == "S/ 8,455"
+
+
+def test_restablecer_exige_confirmacion():
+    assert boton(abrir("resumen"), "Restablecer datos de ejemplo").disabled
 
 
 # =====================================================================
-# Errores de datos (se prueba con una copia de la app y datos dañados)
+# Administración: clientes
 # =====================================================================
-def test_datos_invalidos_muestran_un_mensaje_claro(tmp_path):
-    copia = tmp_path / "app.py"
-    shutil.copy(APP, copia)
-    datos = tmp_path / "datos"
-    datos.mkdir()
-    for nombre in ("clientes.csv", "productos.csv", "ventas.csv"):
-        shutil.copy(RAIZ / "datos" / nombre, datos / nombre)
-    (datos / "ventas.csv").write_text(
-        "id_venta,id_cliente,id_producto,cantidad,precio_unitario,fecha\n"
-        "v001,c001,p001,dos,10,2026-09-01\n",
-        encoding="utf-8",
+def test_lista_de_clientes():
+    t = tabla(abrir("clientes"))
+    assert len(t) == 8
+    juan = t[t["Cliente"] == "Juan Pérez"].iloc[0]
+    assert (juan["Tipo"], juan["Segmento"], juan["Compras"], juan["Días sin comprar"]) == ("Frecuente", "Alto", 3, "40")
+    rosa = t[t["Cliente"] == "Rosa Chávez"].iloc[0]
+    assert (rosa["Segmento"], rosa["Días sin comprar"], rosa["Categorías habituales"]) == ("Sin compras", "—", "—")
+
+
+def test_buscar_clientes_por_nombre():
+    at = abrir("clientes")
+    at.text_input(key="buscar_cliente").set_value("ana").run()
+    assert list(tabla(at)["Cliente"]) == ["Ana Ríos"]
+
+
+def test_registrar_un_cliente_nuevo():
+    at = abrir("clientes")
+    at.text_input(key="nc_nombre_0").set_value("  Ana   Torres ").run()
+    at.text_input(key="nc_tel_0").set_value("900 000 009").run()
+    boton(at, "Registrar cliente").click().run()
+    assert ok(at) and "Cliente Ana Torres registrado (c009)." in exito(at)
+    t = tabla(at)
+    assert len(t) == 9
+    nueva = t[t["Cliente"] == "Ana Torres"].iloc[0]
+    assert (nueva["Tipo"], nueva["Segmento"], nueva["Teléfono"]) == ("Regular", "Sin compras", "51900000009")
+    assert at.text_input(key="nc_nombre_1").value == ""  # el formulario quedó limpio
+
+
+def test_registrar_cliente_sin_nombre_muestra_el_error_y_conserva_lo_escrito():
+    at = abrir("clientes")
+    at.text_input(key="nc_tel_0").set_value("900000009").run()
+    boton(at, "Registrar cliente").click().run()
+    assert errores(at) == ["El nombre no puede estar vacío."]
+    assert at.text_input(key="nc_tel_0").value == "900000009"
+    assert len(tabla(at)) == 8
+
+
+def test_registrar_cliente_con_telefono_invalido():
+    at = abrir("clientes")
+    at.text_input(key="nc_nombre_0").set_value("Ana Torres").run()
+    at.text_input(key="nc_tel_0").set_value("abc123").run()
+    boton(at, "Registrar cliente").click().run()
+    assert len(errores(at)) == 1 and "Teléfono inválido" in errores(at)[0]
+    assert len(tabla(at)) == 8
+
+
+def test_editar_un_cliente():
+    at = abrir("clientes")
+    at.selectbox(key="editar_cliente_sel").select("c003").run()
+    at.text_input(key="ec_nombre_c003_0").set_value("Carlos Ruiz Díaz").run()
+    at.text_input(key="ec_tel_c003_0").set_value("").run()
+    boton(at, "Guardar cambios").click().run()
+    assert ok(at) and "Datos de Carlos Ruiz Díaz actualizados." in exito(at)
+    carlos = tabla(at)[tabla(at)["Cliente"] == "Carlos Ruiz Díaz"].iloc[0]
+    assert carlos["Teléfono"] == "—" and carlos["Compras"] == 2  # sus compras siguen asociadas
+
+
+def test_eliminar_un_cliente_sin_ventas():
+    at = abrir("clientes")
+    at.text_input(key="nc_nombre_0").set_value("Ana Torres").run()
+    boton(at, "Registrar cliente").click().run()
+    at.selectbox(key="editar_cliente_sel").select("c009").run()
+    assert boton(at, "Eliminar cliente").disabled
+    at.checkbox(key="conf_del_cliente_c009").check().run()
+    boton(at, "Eliminar cliente").click().run()
+    assert ok(at) and "Cliente Ana Torres eliminado." in exito(at)
+    assert len(tabla(at)) == 8
+
+
+def test_no_se_puede_eliminar_un_cliente_con_ventas():
+    at = abrir("clientes")
+    at.checkbox(key="conf_del_cliente_c001").check().run()
+    boton(at, "Eliminar cliente").click().run()
+    assert errores(at) == ["No se puede eliminar el cliente c001: tiene 4 ventas registradas."]
+    assert len(tabla(at)) == 8
+
+
+# =====================================================================
+# Administración: productos
+# =====================================================================
+def test_lista_de_productos():
+    t = tabla(abrir("productos"))
+    assert len(t) == 10
+    laptop = t[t["Producto"] == "Laptop 14 pulgadas"].iloc[0]
+    assert (laptop["Categoría"], laptop["Precio actual"], laptop["Unidades vendidas"], laptop["Ingresos"]) == (
+        "Cómputo",
+        2400.0,
+        2,
+        4750.0,
     )
-    st.cache_data.clear()
-    try:
-        at = AppTest.from_file(str(copia), default_timeout=TIEMPO).run()
-        assert sin_excepciones(at)
-        assert len(at.error) == 1
-        assert "No se pudieron cargar los datos" in at.error[0].value
-        assert "ventas.csv, fila 2" in at.error[0].value
-    finally:
-        st.cache_data.clear()
+
+
+def test_registrar_un_producto_en_una_categoria_existente():
+    at = abrir("productos")
+    at.text_input(key="np_0_nombre").set_value("Cable HDMI").run()
+    at.selectbox(key="np_0_cat").select("accesorios").run()
+    at.number_input(key="np_0_precio").set_value(25.0).run()
+    boton(at, "Registrar producto").click().run()
+    assert ok(at) and "Producto Cable HDMI registrado (p011)." in exito(at)
+    nuevo = tabla(at)[tabla(at)["Producto"] == "Cable HDMI"].iloc[0]
+    assert (nuevo["Categoría"], nuevo["Precio actual"], nuevo["Unidades vendidas"]) == ("Accesorios", 25.0, 0)
+
+
+def test_registrar_un_producto_con_una_categoria_nueva():
+    at = abrir("productos")
+    at.text_input(key="np_0_nombre").set_value("Impresora láser").run()
+    at.selectbox(key="np_0_cat").select("Nueva categoría…").run()
+    at.text_input(key="np_0_cat_nueva").set_value("Impresión 3D").run()
+    boton(at, "Registrar producto").click().run()
+    assert ok(at) and "Producto Impresora láser registrado (p011)." in exito(at)
+    assert tabla(at)[tabla(at)["Producto"] == "Impresora láser"].iloc[0]["Categoría"] == "Impresion 3d"
+    at.switch_page("paginas/pedido.py").run()  # la categoría nueva ya se puede usar al armar pedidos
+    assert "Impresion 3d" in at.get("button_group")[0].options
+
+
+def test_registrar_producto_sin_nombre():
+    at = abrir("productos")
+    boton(at, "Registrar producto").click().run()
+    assert errores(at) == ["El nombre no puede estar vacío."]
+
+
+def test_cambiar_el_precio_de_un_producto_no_altera_las_ventas_pasadas():
+    at = abrir("productos")
+    at.selectbox(key="editar_producto_sel").select("p001").run()
+    at.number_input(key="ep_p001_0_precio").set_value(2500.0).run()
+    boton(at, "Guardar cambios").click().run()
+    assert ok(at) and "Producto Laptop 14 pulgadas actualizado." in exito(at)
+    laptop = tabla(at)[tabla(at)["Producto"] == "Laptop 14 pulgadas"].iloc[0]
+    assert laptop["Precio actual"] == 2500.0 and laptop["Ingresos"] == 4750.0
+    at.switch_page("paginas/resumen.py").run()
+    assert indicadores(at)["Ventas totales"] == "S/ 8,455"
+
+
+def test_no_se_puede_eliminar_un_producto_con_ventas_pero_si_uno_nuevo():
+    at = abrir("productos")
+    at.checkbox(key="conf_del_producto_p001").check().run()
+    boton(at, "Eliminar producto").click().run()
+    assert len(errores(at)) == 1 and "tiene 2 ventas registradas" in errores(at)[0]
+    at.text_input(key="np_0_nombre").set_value("Cable HDMI").run()
+    boton(at, "Registrar producto").click().run()
+    at.selectbox(key="editar_producto_sel").select("p011").run()
+    at.checkbox(key="conf_del_producto_p011").check().run()
+    boton(at, "Eliminar producto").click().run()
+    assert "Producto Cable HDMI eliminado." in exito(at) and len(tabla(at)) == 10
+
+
+# =====================================================================
+# Administración: ventas
+# =====================================================================
+def test_registrar_una_venta_muestra_como_cambia_la_agenda():
+    at = abrir("registro_ventas")
+    boton(at, "Registrar venta").click().run()  # Juan Pérez, laptop, hoy
+    assert ok(at)
+    assert exito(at) == ["Venta v031 registrada por S/ 2,400.00. Juan Pérez pasó de «Reactivar» a «Fidelizar» en la agenda."]
+
+
+def test_la_venta_registrada_cambia_la_agenda():
+    at = abrir("registro_ventas")
+    boton(at, "Registrar venta").click().run()
+    at.switch_page("paginas/agenda.py").run()
+    assert ok(at)
+    assert (indicadores(at)["Por reactivar"], indicadores(at)["Por fidelizar"]) == ("1", "4")
+    assert tarjetas(at)[:2] == ["1. Pedro Salas", "2. Juan Pérez"]
+
+
+def test_el_total_de_la_venta_se_calcula_al_cambiar_la_cantidad():
+    at = abrir("registro_ventas")
+    at.number_input(key="venta_cantidad_0").set_value(3).run()
+    assert "**Total de la venta: S/ 7,200.00**" in [m.value for m in at.markdown]
+
+
+def test_el_precio_se_sugiere_segun_el_producto_elegido():
+    at = abrir("registro_ventas")
+    at.selectbox(key="venta_producto_0").select("p002").run()
+    assert at.number_input(key="venta_precio_0_p002").value == 45.0
+
+
+def test_registrar_una_venta_con_precio_distinto_al_del_producto():
+    at = abrir("registro_ventas")
+    at.selectbox(key="venta_cliente_0").select("c003").run()
+    at.selectbox(key="venta_producto_0").select("p002").run()
+    at.number_input(key="venta_precio_0_p002").set_value(40.0).run()
+    boton(at, "Registrar venta").click().run()
+    assert any("Venta v031 registrada por S/ 40.00" in t for t in exito(at))
+    ultima = tabla(at).iloc[0]  # el historial muestra primero la más reciente
+    assert (ultima["id_venta"], ultima["precio_unitario"], ultima["monto"]) == ("v031", 40.0, 40.0)
+
+
+def test_historial_ordenado_por_fecha_y_filtrable():
+    at = abrir("registro_ventas")
+    t = tabla(at)
+    assert len(t) == 30 and str(t["fecha"].iloc[0])[:10] == "2026-10-03"
+    at.selectbox(key="filtro_venta_cliente").select("Juan Pérez").run()
+    assert len(tabla(at)) == 4
+    at.selectbox(key="filtro_venta_categoria").select("perifericos").run()
+    assert len(tabla(at)) == 2  # mouse y teclado
+
+
+def test_anular_una_venta():
+    at = abrir("registro_ventas")
+    assert boton(at, "Anular venta").disabled
+    at.checkbox(key="conf_anular_venta").check().run()
+    boton(at, "Anular venta").click().run()  # la más reciente: v030
+    assert ok(at) and "Venta v030 anulada." in exito(at)
+    assert len(tabla(at)) == 29
+
+
+def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
+    from interfaz import comun
+
+    at = abrir("resumen")
+    repo = comun.repositorio()  # la misma base que usa la aplicación
+    for venta in repo.cargar_todo().ventas:
+        repo.eliminar_venta(venta.id_venta)
+    at.switch_page("paginas/agenda.py").run()
+    assert ok(at) and tarjetas(at) == []
+    assert any("Todavía no hay clientes para contactar" in i.value for i in at.info)
+    at.switch_page("paginas/resumen.py").run()
+    assert ok(at) and any("Aún no hay ventas" in i.value for i in at.info)

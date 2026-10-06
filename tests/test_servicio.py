@@ -172,3 +172,47 @@ def test_resumen_sin_ventas(datos):
     r = resumen_ventas(vacio)
     assert (r.total, r.promedio_por_linea, r.n_ventas) == (0.0, 0.0, 0)
     assert r.por_mes == () and r.por_categoria == () and r.top_productos == ()
+
+
+# =====================================================================
+# Efecto de un cambio sobre la agenda
+# =====================================================================
+def test_acciones_por_cliente(datos, motor):
+    from ventas.servicio import acciones_por_cliente
+
+    assert acciones_por_cliente(datos, HOY, motor) == {
+        "c001": "reactivar",
+        "c007": "reactivar",
+        "c002": "fidelizar",
+        "c004": "fidelizar",
+        "c008": "fidelizar",
+        "c003": "cruzar",
+        "c005": "cruzar",
+    }
+
+
+def test_acciones_por_cliente_cambia_al_agregar_una_venta(datos, motor):
+    from ventas.modelos import Venta
+    from ventas.servicio import acciones_por_cliente
+
+    nueva = Venta("v031", "c001", "p002", 1, 45.0, HOY)
+    con_venta = type(datos)(datos.clientes, datos.productos, (*datos.ventas, nueva))
+    assert acciones_por_cliente(datos, HOY, motor)["c001"] == "reactivar"
+    assert acciones_por_cliente(con_venta, HOY, motor)["c001"] == "fidelizar"
+
+
+@pytest.mark.parametrize(
+    ("antes", "despues", "esperado"),
+    [
+        ("reactivar", "fidelizar", "Juan Pérez pasó de «Reactivar» a «Fidelizar» en la agenda."),
+        ("cruzar", "fidelizar", "Juan Pérez pasó de «Complementar» a «Fidelizar» en la agenda."),
+        (None, "cruzar", "Juan Pérez ahora aparece en la agenda como «Complementar»."),
+        ("fidelizar", None, "Juan Pérez ya no aparece en la agenda."),
+        ("fidelizar", "fidelizar", "Juan Pérez sigue en la agenda como «Fidelizar»."),
+        (None, None, "Juan Pérez sigue sin aparecer en la agenda."),
+    ],
+)
+def test_describir_cambio_agenda(antes, despues, esperado):
+    from ventas.servicio import describir_cambio_agenda
+
+    assert describir_cambio_agenda("Juan Pérez", antes, despues) == esperado

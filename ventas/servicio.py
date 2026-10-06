@@ -107,3 +107,28 @@ def resumen_ventas(datos: Datos) -> ResumenVentas:
         por_categoria=ventas_por_categoria(datos.ventas, datos.productos),
         top_productos=tuple((nombre_de[i], u) for i, u in ranking_productos(datos.ventas, n=5)),
     )
+
+
+# ---------------------------------------------------------------------
+# Efecto de un cambio en los datos sobre la agenda
+# ---------------------------------------------------------------------
+TITULOS_ACCION = {"reactivar": "Reactivar", "fidelizar": "Fidelizar", "cruzar": "Complementar"}
+
+
+def acciones_por_cliente(datos: Datos, hoy: date, motor: MotorAsesor) -> dict[str, str]:
+    """{id_cliente: tipo de acción} de la agenda de ese día (solo los que aparecen)."""
+    agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, hoy, motor)
+    return {entrada.accion.id_cliente: entrada.accion.tipo for entrada in agenda}
+
+
+def describir_cambio_agenda(nombre: str, antes: str | None, despues: str | None) -> str:
+    """Frase para mostrar qué le pasó a un cliente en la agenda tras registrar una venta."""
+    if antes == despues:
+        if antes is None:
+            return f"{nombre} sigue sin aparecer en la agenda."
+        return f"{nombre} sigue en la agenda como «{TITULOS_ACCION[antes]}»."
+    if antes is None:
+        return f"{nombre} ahora aparece en la agenda como «{TITULOS_ACCION[despues]}»."
+    if despues is None:
+        return f"{nombre} ya no aparece en la agenda."
+    return f"{nombre} pasó de «{TITULOS_ACCION[antes]}» a «{TITULOS_ACCION[despues]}» en la agenda."

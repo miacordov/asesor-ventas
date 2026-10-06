@@ -15,7 +15,7 @@ from ventas.agenda import (
     crear_accion,
 )
 from ventas.cargador import cargar_todo
-from ventas.funcional import perfil_cliente, perfiles
+from ventas.funcional import PerfilCliente, perfil_cliente, perfiles
 from ventas.logico import MotorLogico, PuenteProlog
 from ventas.modelos import Venta
 
@@ -209,6 +209,15 @@ def test_explicar_redacta_la_frase(datos):
     assert Fidelizar("c002", ("frecuente", "reciente")).explicar(p2) == (
         "Compró 5 veces, su última compra fue hace 4 días"
     )
+
+
+@pytest.mark.parametrize(
+    ("dias", "esperado"), [(0, "hoy"), (1, "hace 1 día"), (2, "hace 2 días"), (30, "hace 30 días")]
+)
+def test_explicar_redacta_bien_los_dias_desde_la_ultima_compra(dias, esperado):
+    perfil = PerfilCliente("c001", 3, date(2026, 10, 5), dias, 100.0, 33.33, ())
+    frase = Fidelizar("c001", ("frecuente", "reciente")).explicar(perfil)
+    assert frase == f"Compró 3 veces, su última compra fue {esperado}"
 
 
 def test_mejor_por_cliente_se_queda_con_la_mas_urgente():
