@@ -25,10 +25,10 @@ except Exception as error:  # p. ej. SWI-Prolog no instalado: pyswip falla al im
     st.stop()
 
 try:
-    comun.datos()  # abre la base de datos; la primera vez la llena con los datos de ejemplo
+    comun.datos()  # abre la base de datos
 except (ValueError, sqlite3.Error, OSError) as error:
     st.error(f"No se pudieron cargar los datos: {error}")
-    st.info("Revisa la carpeta datos/ (archivos CSV y asesor.db) y vuelve a abrir la aplicación.")
+    st.info("Revisa la carpeta de datos y vuelve a abrir la aplicación.")
     st.stop()
 
 estilo.aplicar()
@@ -39,9 +39,9 @@ st.sidebar.date_input(
     value=comun.FECHA_DEMO,
     key="fecha_referencia",
     format="DD/MM/YYYY",
-    help="Los días sin comprar se cuentan hasta esta fecha. Se fija para que la demostración sea reproducible.",
+    help="Los días sin comprar se cuentan hasta esta fecha.",
 )
-st.sidebar.caption("Orientado a objetos · funcional · lógico (Prolog)")
+
 
 navegacion = st.navigation(
     {

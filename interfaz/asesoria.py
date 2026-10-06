@@ -15,9 +15,7 @@ TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
-# ---------------------------------------------------------------------
 # Agenda de hoy
-# ---------------------------------------------------------------------
 def pagina_agenda() -> None:
     comun.mostrar_aviso()
     estilo.hero(
@@ -46,7 +44,6 @@ def pagina_agenda() -> None:
         "**Reactivar:** compraban seguido y dejaron de venir. **Fidelizar:** clientes frecuentes y activos. "
         "**Complementar:** compran poco, se les ofrece lo que llevan otros. "
         "**Valor en pedidos:** suma del mejor pedido de cada cliente, con su descuento. "
-        "Ordenada por urgencia y, a igual urgencia, por gasto total; Prolog deduce la acción y nada se envía solo."
     )
     filtro = st.segmented_control(
         "Mostrar", list(FILTROS), default="Todos", key="filtro_agenda", label_visibility="collapsed"
