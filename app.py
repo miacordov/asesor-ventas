@@ -14,7 +14,7 @@ import streamlit as st
 st.set_page_config(page_title="Asesor comercial", page_icon=":material/storefront:", layout="wide")
 
 try:
-    from interfaz import comun
+    from interfaz import comun, estilo
 except Exception as error:  # p. ej. SWI-Prolog no instalado: pyswip falla al importarse
     st.error(
         "No se pudo iniciar el motor lógico. Verifica que SWI-Prolog esté instalado "
@@ -30,6 +30,9 @@ except (ValueError, sqlite3.Error, OSError) as error:
     st.error(f"No se pudieron cargar los datos: {error}")
     st.info("Revisa la carpeta datos/ (archivos CSV y asesor.db) y vuelve a abrir la aplicación.")
     st.stop()
+
+estilo.aplicar()
+st.logo(estilo.LOGO_SVG, size="large")
 
 st.sidebar.date_input(
     "Fecha de referencia",
@@ -55,3 +58,4 @@ navegacion = st.navigation(
     }
 )
 navegacion.run()
+estilo.pie()

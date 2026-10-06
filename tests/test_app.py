@@ -8,6 +8,7 @@ Cada prueba usa una base de datos en memoria nueva (se llena con los datos de
 ejemplo), de modo que nada depende del orden ni toca la base real.
 """
 
+import re
 import shutil
 from datetime import date
 from pathlib import Path
@@ -36,6 +37,24 @@ def abrir(pagina: str | None = None) -> AppTest:
     if pagina:
         at.switch_page(f"paginas/{pagina}.py").run()
     return at
+
+
+def banner(at: AppTest) -> str:
+    """Título del banner de la pantalla (el <h1> del encabezado)."""
+    html = next(m.value for m in at.markdown if 'class="hero"' in m.value)
+    return re.search(r"<h1>(.*?)</h1>", html).group(1)
+
+
+def filas_de_producto(html: str) -> list[tuple[str, str]]:
+    """[(nombre, precio)] de las filas de producto de un bloque HTML."""
+    patron = r'<span class="nom">(.*?)<small>.*?</small></span><span class="pre">(.*?)</span>'
+    return re.findall(patron, html)
+
+
+def totales(at: AppTest) -> list[tuple[str, str]]:
+    """[(precio tachado o '', total)] de cada bloque de total de las tarjetas."""
+    html = " ".join(m.value for m in at.markdown if 'class="total"' in m.value)
+    return re.findall(r'<span class="val">(?:<s>(.*?)</s>)?(.*?)</span>', html)
 
 
 def ok(at: AppTest) -> bool:
@@ -72,7 +91,7 @@ def errores(at: AppTest) -> list[str]:
 def test_la_app_inicia_en_la_agenda_sin_errores():
     at = abrir()
     assert ok(at) and errores(at) == []
-    assert "Agenda de hoy" in at.title[0].value
+    assert banner(at) == "Agenda de hoy"
 
 
 @pytest.mark.parametrize("pagina", PAGINAS)
@@ -139,7 +158,7 @@ def test_agenda_muestra_los_siete_contactos_en_orden():
 
 def test_agenda_indicadores_calculados_a_mano():
     assert indicadores(abrir()) == {
-        "Contactos de hoy": "7",
+        "Contactos": "7",
         "Por reactivar": "2",
         "Por fidelizar": "3",
         "Complementar": "2",
@@ -162,10 +181,11 @@ def test_cada_tarjeta_tiene_su_boton_de_whatsapp_con_el_mensaje():
 
 
 def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
-    textos = [m.value for m in abrir().markdown]
-    assert "Compró 3 veces, lleva 40 días sin comprar" in textos
-    assert "**Total S/ 607.50** · ~~S/ 675.00~~ con 10 % de descuento" in textos
-    assert "**Total S/ 110.00**" in textos  # Carlos es regular: sin descuento
+    at = abrir()
+    assert "Compró 3 veces, lleva 40 días sin comprar" in [m.value for m in at.markdown]
+    assert ("S/ 675.00", "S/ 607.50") in totales(at)  # Juan: precio tachado y total con descuento
+    assert ("", "S/ 110.00") in totales(at)  # Carlos es regular: sin descuento
+    assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
 def test_cada_tarjeta_tiene_porque_y_mensaje():
@@ -216,8 +236,8 @@ def test_pedido_por_defecto_calculado_a_mano():
 
 
 def test_pedido_la_mejor_opcion_es_webcam_y_mochila():
-    listas = [m.value for m in abrir("pedido").markdown if m.value.startswith("- ")]
-    assert listas[0] == "- Webcam HD · **S/ 110.00**\n- Mochila para laptop · **S/ 85.00**"
+    filas = [m.value for m in abrir("pedido").markdown if 'class="prod"' in m.value]
+    assert filas_de_producto(filas[0]) == [("Webcam HD", "S/ 110.00"), ("Mochila para laptop", "S/ 85.00")]
 
 
 @pytest.mark.parametrize(("presupuesto", "combinaciones"), [(105.0, 1), (104.0, 0), (130.0, 2), (200.0, 5)])
@@ -501,3 +521,57 @@ def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
     assert any("Todavía no hay clientes para contactar" in i.value for i in at.info)
     at.switch_page("paginas/resumen.py").run()
     assert ok(at) and any("Aún no hay ventas" in i.value for i in at.info)
+
+
+# =====================================================================
+# Diseño: banner, etiquetas, íconos y pie de página
+# =====================================================================
+@pytest.mark.parametrize(
+    ("pagina", "seccion", "titulo"),
+    [
+        ("agenda", "Asesoría", "Agenda de hoy"),
+        ("pedido", "Asesoría · modo mostrador", "Arma mi pedido"),
+        ("resumen", "Administración", "Resumen del negocio"),
+        ("clientes", "Administración", "Clientes"),
+        ("productos", "Administración", "Productos"),
+        ("registro_ventas", "Administración", "Ventas"),
+    ],
+)
+def test_cada_pantalla_tiene_su_banner_con_ilustracion(pagina, seccion, titulo):
+    html = next(m.value for m in abrir(pagina).markdown if 'class="hero"' in m.value)
+    assert f'<div class="eyebrow">{seccion}</div>' in html
+    assert f"<h1>{titulo}</h1>" in html
+    assert "<svg" in html
+
+
+def test_las_etiquetas_de_la_agenda_usan_el_tono_de_su_prioridad():
+    html = " ".join(m.value for m in abrir().markdown if "chip" in m.value)
+    assert 'chip-alta">Reactivar cliente' in html
+    assert 'chip-media">Fidelizar cliente' in html
+    assert 'chip-baja">Ofrecer productos complementarios' in html
+    assert 'chip-neutro">Cliente frecuente' in html
+
+
+def test_cada_producto_del_pedido_lleva_su_icono():
+    filas = [m.value for m in abrir("pedido").markdown if 'class="prod"' in m.value]
+    assert filas
+    assert all(f.count("<svg") == f.count('class="prod"') for f in filas)
+
+
+@pytest.mark.parametrize("pagina", PAGINAS)
+def test_toda_pantalla_termina_con_el_pie_de_pagina(pagina):
+    assert any('class="pie"' in m.value for m in abrir(pagina).markdown)
+
+
+def test_un_producto_con_simbolos_no_rompe_el_diseno():
+    at = abrir("productos")
+    at.text_input(key="np_0_nombre").set_value("Mouse <Pro> & Cía").run()
+    at.selectbox(key="np_0_cat").select("perifericos").run()
+    at.number_input(key="np_0_precio").set_value(10.0).run()
+    boton(at, "Registrar producto").click().run()
+    assert ok(at)
+    at.switch_page("paginas/pedido.py").run()
+    at.number_input(key="presupuesto_pedido").set_value(100.0).run()
+    filas = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
+    assert "Mouse &lt;Pro&gt; &amp; Cía" in filas
+    assert "<Pro>" not in filas

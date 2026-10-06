@@ -9,7 +9,7 @@ dibujar la página), de modo que los avisos y los campos limpios se ven al insta
 import pandas as pd
 import streamlit as st
 
-from interfaz import comun
+from interfaz import comun, estilo
 from interfaz.comun import dinero, dinero_corto, nombre_categoria
 from ventas import administracion as admin
 from ventas import analisis
@@ -26,12 +26,13 @@ AYUDA_TELEFONO = (
     "Con o sin código de país. Un celular de 9 dígitos se toma como peruano (+51). "
     "Sin teléfono no habrá botón de WhatsApp para este cliente."
 )
-COLOR_GRAFICO = "#0F9D8A"
+COLOR_GRAFICO = "#14305E"  # azul navy
+COLOR_GRAFICO_2 = "#C69B3F"  # dorado
 
 
-def _titulo(texto: str) -> None:
+def _titulo(ilustracion: str, titulo: str, subtitulo: str) -> None:
     comun.mostrar_aviso()
-    st.title(texto)
+    estilo.hero("Administración", titulo, subtitulo, ilustracion)
 
 
 def _repo():
@@ -42,14 +43,19 @@ def _repo():
 # Resumen del negocio
 # =====================================================================
 def pagina_resumen() -> None:
-    _titulo(":material/dashboard: Resumen del negocio")
+    _titulo(
+        "resumen",
+        "Resumen del negocio",
+        "Cómo van las ventas: indicadores, tendencia por mes, categorías y tus mejores clientes.",
+    )
     datos, hoy = comun.datos(), comun.fecha_referencia()
     df = analisis.dataframe_ventas(datos)
     if df.empty:
         st.info("Aún no hay ventas registradas. Regístralas en Administración › Ventas.", icon=":material/info:")
     else:
         indicadores(df)
-        izquierda, derecha = st.columns(2, gap="large")
+        with st.container(key="fila_graficos"):
+            izquierda, derecha = st.columns(2, gap="large")
         with izquierda:
             ventas_por_mes(df)
         with derecha:
@@ -67,7 +73,8 @@ def pagina_resumen() -> None:
 
 
 def indicadores(df: pd.DataFrame) -> None:
-    c = st.columns(5)
+    with st.container(key="fila_indicadores"):
+        c = st.columns(5)
     c[0].metric("Ventas totales", dinero_corto(float(df["monto"].sum())), border=True)
     c[1].metric(
         "Compras",
@@ -107,7 +114,7 @@ def ventas_por_categoria(df: pd.DataFrame) -> None:
     st.subheader("Ventas por categoría")
     tabla = analisis.ventas_por_categoria(df)
     tabla["categoria"] = tabla["categoria"].map(nombre_categoria)
-    st.bar_chart(tabla, x="categoria", y="ventas", x_label="Categoría", y_label="Ventas (S/)", color=COLOR_GRAFICO)
+    st.bar_chart(tabla, x="categoria", y="ventas", x_label="Categoría", y_label="Ventas (S/)", color=COLOR_GRAFICO_2)
     st.dataframe(
         tabla,
         hide_index=True,
@@ -121,7 +128,8 @@ def ventas_por_categoria(df: pd.DataFrame) -> None:
 
 def clientes_y_segmentos(datos, hoy, df: pd.DataFrame) -> None:
     st.subheader("Clientes")
-    izquierda, derecha = st.columns(2, gap="large")
+    with st.container(key="fila_segmentos"):
+        izquierda, derecha = st.columns(2, gap="large")
     with izquierda:
         st.markdown("**Segmentos por gasto total**")
         if comun.fecha_valida(datos, hoy):
@@ -174,7 +182,11 @@ def datos_de_ejemplo() -> None:
 # Clientes
 # =====================================================================
 def pagina_clientes() -> None:
-    _titulo(":material/groups: Clientes")
+    _titulo(
+        "clientes",
+        "Clientes",
+        "Tu cartera de clientes. El tipo y el segmento se calculan solos con su historial de compras.",
+    )
     datos, hoy = comun.datos(), comun.fecha_referencia()
     lista, nuevo, editar = st.tabs(["Lista", "Nuevo cliente", "Editar o eliminar"])
     with lista:
@@ -297,7 +309,11 @@ def editar_cliente(datos) -> None:
 # Productos
 # =====================================================================
 def pagina_productos() -> None:
-    _titulo(":material/inventory_2: Productos")
+    _titulo(
+        "productos",
+        "Productos",
+        "El catálogo y lo que más se vende. Cambiar un precio no altera las ventas ya registradas.",
+    )
     datos = comun.datos()
     catalogo, nuevo, editar = st.tabs(["Catálogo", "Nuevo producto", "Editar o eliminar"])
     with catalogo:
@@ -443,7 +459,11 @@ def editar_producto(datos) -> None:
 # Ventas
 # =====================================================================
 def pagina_ventas() -> None:
-    _titulo(":material/receipt_long: Ventas")
+    _titulo(
+        "ventas",
+        "Ventas",
+        "Registra una venta y la agenda se recalcula al instante; consulta, filtra y anula desde el historial.",
+    )
     datos, hoy = comun.datos(), comun.fecha_referencia()
     registrar, historial = st.tabs(["Registrar venta", "Historial"])
     with registrar:

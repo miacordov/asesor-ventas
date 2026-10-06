@@ -1,11 +1,36 @@
-[theme.light]
-primaryColor = "#0F9D8A"
+[server]
+enableStaticServing = true
 
-[theme.dark]
-primaryColor = "#2DD4BF"
+[browser]
+gatherUsageStats = false
 
 [client]
 toolbarMode = "minimal"
 
-[browser]
-gatherUsageStats = false
+# Paleta: crema (60 %), azul navy (30 %) y dorado (10 %). Ver interfaz/estilo.py.
+[theme]
+base = "light"
+primaryColor = "#14305E"
+backgroundColor = "#FAF6EC"
+secondaryBackgroundColor = "#F1EAD8"
+textColor = "#14213D"
+borderColor = "#E3DAC3"
+baseRadius = "0.6rem"
+font = "sans-serif"
+headingFont = "Playfair Display, Georgia, serif"
+
+[[theme.fontFaces]]
+family = "Playfair Display"
+url = "app/static/fuentes/playfair-display-latin-600-normal.woff2"
+weight = 600
+
+[[theme.fontFaces]]
+family = "Playfair Display"
+url = "app/static/fuentes/playfair-display-latin-700-normal.woff2"
+weight = 700
+
+[theme.sidebar]
+backgroundColor = "#0B1D3A"
+secondaryBackgroundColor = "#14305E"
+textColor = "#F5EFE0"
+primaryColor = "#D9B45A"

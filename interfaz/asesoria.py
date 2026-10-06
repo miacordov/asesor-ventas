@@ -3,7 +3,7 @@
 import pandas as pd
 import streamlit as st
 
-from interfaz import comun
+from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
 from ventas.funcional import UMBRAL_FRECUENTE
 from ventas.logico import DIAS_INACTIVIDAD
@@ -11,17 +11,8 @@ from ventas.modelos import ClienteFrecuente
 from ventas.pedido import armar_pedido_manual
 from ventas.servicio import TarjetaAgenda, construir_tarjetas
 
-COLOR_PRIORIDAD = {"alta": "red", "media": "orange", "baja": "blue"}
-ICONO_ACCION = {
-    "reactivar": ":material/replay:",
-    "fidelizar": ":material/favorite:",
-    "cruzar": ":material/add_shopping_cart:",
-}
+TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
-
-
-def lista_markdown(productos) -> str:
-    return "\n".join(f"- {p.nombre} · **{dinero(p.precio)}**" for p in productos)
 
 
 # ---------------------------------------------------------------------
@@ -29,7 +20,13 @@ def lista_markdown(productos) -> str:
 # ---------------------------------------------------------------------
 def pagina_agenda() -> None:
     comun.mostrar_aviso()
-    st.title(":material/event_note: Agenda de hoy")
+    estilo.hero(
+        "Asesoría",
+        "Agenda de hoy",
+        "Los clientes a quienes conviene contactar hoy, ordenados por urgencia, con el motivo, "
+        "el pedido sugerido y el mensaje listo para enviar.",
+        "agenda",
+    )
     datos, hoy = comun.datos(), comun.fecha_referencia()
     if not comun.fecha_valida(datos, hoy):
         return
@@ -46,19 +43,22 @@ def pagina_agenda() -> None:
 
     resumen_superior(tarjetas)
     st.caption(
-        "Ordenada por urgencia y, a igual urgencia, por gasto total. "
-        "Prolog deduce la acción y el motivo; nada se envía solo."
+        "**Reactivar:** compraban seguido y dejaron de venir. **Fidelizar:** clientes frecuentes y activos. "
+        "**Complementar:** compran poco, se les ofrece lo que llevan otros. "
+        "**Valor en pedidos:** suma del mejor pedido de cada cliente, con su descuento. "
+        "Ordenada por urgencia y, a igual urgencia, por gasto total; Prolog deduce la acción y nada se envía solo."
     )
     filtro = st.segmented_control(
         "Mostrar", list(FILTROS), default="Todos", key="filtro_agenda", label_visibility="collapsed"
     )
     tipo = FILTROS[filtro or "Todos"]
     visibles = [(i, t) for i, t in enumerate(tarjetas, start=1) if tipo is None or t.entrada.accion.tipo == tipo]
-    for inicio in range(0, len(visibles), 2):
-        columnas = st.columns(2)
-        for columna, (posicion, tarjeta_) in zip(columnas, visibles[inicio : inicio + 2], strict=False):
-            with columna:
-                tarjeta(posicion, tarjeta_)
+    with st.container(key="fila_rejilla"):
+        for inicio in range(0, len(visibles), 2):
+            columnas = st.columns(2)
+            for columna, (posicion, tarjeta_) in zip(columnas, visibles[inicio : inicio + 2], strict=False):
+                with columna:
+                    tarjeta(posicion, tarjeta_)
 
 
 def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
@@ -66,29 +66,29 @@ def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
         return sum(t.entrada.accion.tipo == tipo for t in tarjetas)
 
     potencial = sum(t.pedidos[0].total_con_descuento for t in tarjetas if t.pedidos)
-    c = st.columns([1, 1, 1, 1, 1.5])
-    c[0].metric("Contactos de hoy", len(tarjetas), border=True)
-    c[1].metric("Por reactivar", cuantos("reactivar"), border=True, help="Compraban seguido y dejaron de venir.")
-    c[2].metric("Por fidelizar", cuantos("fidelizar"), border=True, help="Clientes frecuentes y activos.")
-    c[3].metric("Complementar", cuantos("cruzar"), border=True, help="Compran poco: se les ofrece lo que llevan otros.")
+    with st.container(key="fila_indicadores"):
+        c = st.columns([1, 1, 1, 1, 1.5])
+    c[0].metric("Contactos", len(tarjetas), border=True)
+    c[1].metric("Por reactivar", cuantos("reactivar"), border=True)
+    c[2].metric("Por fidelizar", cuantos("fidelizar"), border=True)
+    c[3].metric("Complementar", cuantos("cruzar"), border=True)
     c[4].metric(
         "Valor en pedidos sugeridos",
         dinero(potencial),
         border=True,
-        help="Suma del mejor pedido de cada cliente, con su descuento.",
     )
 
 
 def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
     accion = t.entrada.accion
     frecuente = isinstance(t.cliente, ClienteFrecuente)
-    color = COLOR_PRIORIDAD[accion.prioridad]
-    with st.container(border=True):
+    with st.container(border=True, key=f"tarjeta_{t.cliente.id_cliente}"):
         st.markdown(f"#### {posicion}. {t.cliente.nombre}")
         st.markdown(
-            f":{color}-badge[{ICONO_ACCION[accion.tipo]} {accion.titulo()}] "
-            f":gray-badge[Prioridad {accion.prioridad}] "
-            f":gray-badge[{'Cliente frecuente' if frecuente else 'Cliente regular'}]"
+            estilo.chip(accion.titulo(), TONO_PRIORIDAD[accion.prioridad])
+            + estilo.chip(f"Prioridad {accion.prioridad}")
+            + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular"),
+            unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
         mostrar_pedido_resumido(t)
@@ -107,20 +107,27 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
                 st.caption("Este cliente no tiene teléfono registrado; agrégalo en Administración › Clientes.")
 
 
+def filas_html(productos) -> str:
+    return "".join(estilo.fila_producto(p.nombre, p.categoria, dinero(p.precio), nombre_categoria(p.categoria)) for p in productos)
+
+
 def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
     if not t.pedidos:
         st.caption("No hay un pedido sugerido dentro del presupuesto habitual de este cliente.")
         return
     mejor = t.pedidos[0]
-    st.markdown(f"**Pedido sugerido**\n\n{lista_markdown(mejor.pedido.productos)}")
-    if mejor.total_con_descuento < mejor.pedido.subtotal:
+    subtotal, total = mejor.pedido.subtotal, mejor.total_con_descuento
+    if total < subtotal:
         porcentaje = round(t.cliente.descuento() * 100)
-        st.markdown(
-            f"**Total {dinero(mejor.total_con_descuento)}** · ~~{dinero(mejor.pedido.subtotal)}~~ "
-            f"con {porcentaje} % de descuento"
+        cierre = estilo.total(
+            "Total", dinero(total), tachado=dinero(subtotal), nota=f"Ahorras {dinero(subtotal - total)} ({porcentaje} % de descuento)"
         )
     else:
-        st.markdown(f"**Total {dinero(mejor.total_con_descuento)}**")
+        cierre = estilo.total("Total", dinero(total))
+    st.markdown(
+        '<div class="pedido-titulo">Pedido sugerido</div>' + filas_html(mejor.pedido.productos) + cierre,
+        unsafe_allow_html=True,
+    )
     if len(t.pedidos) > 1:
         st.caption(f"Hay {len(t.pedidos) - 1} opciones más de pedido para este cliente.")
 
@@ -128,7 +135,7 @@ def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
 def mostrar_por_que(t: TarjetaAgenda) -> None:
     accion = t.entrada.accion
     st.markdown("**Reglas de Prolog que se aplicaron**")
-    st.markdown(" ".join(f":gray-badge[{m}]" for m in accion.motivos))
+    st.markdown("".join(estilo.chip(m) for m in accion.motivos), unsafe_allow_html=True)
     st.caption(
         f"Frecuente: {UMBRAL_FRECUENTE} compras o más. "
         f"Inactivo: más de {DIAS_INACTIVIDAD} días sin comprar."
@@ -161,17 +168,22 @@ def mostrar_por_que(t: TarjetaAgenda) -> None:
 # ---------------------------------------------------------------------
 def pagina_pedido() -> None:
     comun.mostrar_aviso()
-    st.title(":material/shopping_cart: Arma mi pedido")
-    st.caption("Modo mostrador: indica el presupuesto y las categorías, y Prolog recorre por backtracking todas las combinaciones posibles.")
+    estilo.hero(
+        "Asesoría · modo mostrador",
+        "Arma mi pedido",
+        "Indica el presupuesto y las categorías: Prolog recorre por backtracking todas las combinaciones posibles.",
+        "pedido",
+    )
     datos = comun.datos()
     categorias = sorted({p.categoria for p in datos.productos})
     if not categorias:
         st.info("No hay productos registrados. Agrégalos en Administración › Productos.", icon=":material/info:")
         return
 
-    izquierda, derecha = st.columns([1, 2], gap="large")
+    with st.container(key="fila_pedido"):
+        izquierda, derecha = st.columns([1, 2], gap="large")
     with izquierda:
-        with st.container(border=True):
+        with st.container(border=True, key="panel_filtros"):
             presupuesto = st.number_input("Presupuesto (S/)", min_value=1.0, value=200.0, step=10.0, key="presupuesto_pedido")
             elegidas = st.pills(
                 "Categorías",
@@ -195,10 +207,10 @@ def pagina_pedido() -> None:
         st.subheader(f"{len(pedidos)} combinaciones")
         st.caption("De la que más aprovecha el presupuesto a la que menos.")
         for numero, pedido in enumerate(pedidos, start=1):
-            with st.container(border=True):
+            with st.container(border=True, key=f"opcion_{numero}"):
                 st.markdown(f"**Opción {numero} · {dinero(pedido.subtotal)}** · sobran {dinero(presupuesto - pedido.subtotal)}")
                 st.progress(
                     min(pedido.subtotal / presupuesto, 1.0),
                     text=f"Usa el {pedido.subtotal / presupuesto:.0%} del presupuesto",
                 )
-                st.markdown(lista_markdown(pedido.productos))
+                st.markdown(filas_html(pedido.productos), unsafe_allow_html=True)
