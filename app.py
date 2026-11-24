@@ -37,7 +37,7 @@ st.logo(estilo.LOGO_SVG, size="large")
 
 st.sidebar.date_input(
     "Fecha de referencia",
-    value=comun.FECHA_DEMO,
+    value=comun.fecha_inicial(),
     key="fecha_referencia",
     format="DD/MM/YYYY",
     help="Los días sin comprar se cuentan hasta esta fecha.",

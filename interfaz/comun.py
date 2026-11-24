@@ -18,7 +18,12 @@ from ventas.repositorio import RepositorioSQLite
 
 RAIZ = Path(__file__).resolve().parent.parent
 CARPETA_CSV = RAIZ / "datos"
-FECHA_DEMO = date(2026, 10, 5)  # fecha fija para que la demostración sea reproducible
+def fecha_inicial() -> date:
+    """Hoy. Con ASESOR_FECHA=AAAA-MM-DD se fija otra fecha (demostraciones y pruebas)."""
+    try:
+        return date.fromisoformat(os.environ["ASESOR_FECHA"])
+    except (KeyError, ValueError):
+        return date.today()
 
 NOMBRES_CATEGORIA = {
     "computo": "Cómputo",
@@ -85,7 +90,7 @@ def ofertas() -> tuple[Oferta, ...]:
 # Fecha de referencia y mensajes entre ejecuciones
 # ---------------------------------------------------------------------
 def fecha_referencia() -> date:
-    return st.session_state.get("fecha_referencia", FECHA_DEMO)
+    return st.session_state.get("fecha_referencia", fecha_inicial())
 
 
 def fecha_valida(datos_: Datos, hoy: date) -> bool:

@@ -27,6 +27,7 @@ PAGINAS = ["agenda", "pedido", "ofertas", "propuesta", "resumen", "clientes", "p
 @pytest.fixture(autouse=True)
 def entorno_limpio(monkeypatch):
     monkeypatch.setenv("ASESOR_DB", ":memory:")
+    monkeypatch.setenv("ASESOR_FECHA", "2026-10-05")  # fecha fija: los valores esperados dependen de ella
     # Datos fijos de prueba: los valores esperados se calcularon a mano sobre ellos.
     monkeypatch.setattr("interfaz.comun.CARPETA_CSV", RAIZ / "tests" / "datos")
     st.cache_resource.clear()
@@ -112,9 +113,27 @@ def test_navegar_muchas_veces_no_falla():
     assert len(tarjetas(at)) == 7
 
 
-def test_la_fecha_de_referencia_por_defecto_es_la_de_la_demostracion():
+def test_la_fecha_de_referencia_se_puede_fijar_con_asesor_fecha():
     at = abrir()
     assert at.sidebar.date_input[0].value == date(2026, 10, 5)
+
+
+def test_sin_asesor_fecha_la_referencia_es_hoy(monkeypatch):
+    monkeypatch.delenv("ASESOR_FECHA")
+    at = abrir()
+    assert at.sidebar.date_input[0].value == date.today()
+
+
+def test_asesor_fecha_invalida_usa_hoy(monkeypatch):
+    monkeypatch.setenv("ASESOR_FECHA", "mañana")
+    assert abrir().sidebar.date_input[0].value == date.today()
+
+
+def test_el_servidor_solo_escucha_en_esta_computadora():
+    import tomllib
+
+    config = tomllib.loads((RAIZ / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    assert config["server"]["address"] == "localhost"
 
 
 def test_datos_de_ejemplo_invalidos_muestran_un_mensaje_claro(tmp_path, monkeypatch):
