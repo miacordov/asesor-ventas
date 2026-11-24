@@ -322,3 +322,37 @@ def test_total_no_cambia_las_ventas_de_entrada():
     ventas = (venta("v1", precio=10.0), venta("v2", precio=5.0))
     total_ventas(ventas)
     assert ventas == (venta("v1", precio=10.0), venta("v2", precio=5.0))
+
+
+# ---------- frecuencia reciente y ritmo propio ----------
+def test_perfil_cuenta_las_compras_recientes_y_el_intervalo_de_juan(datos):
+    perfil = perfil_cliente("c001", datos.ventas, datos.productos, HOY)
+    assert perfil.compras_recientes == 3  # las tres son de los últimos 180 días
+    assert perfil.intervalo_promedio == 18.5  # (26-ago − 20-jul) / 2 = 37 / 2
+
+
+def test_compras_fuera_de_la_ventana_no_cuentan_como_recientes(datos):
+    dias = [date(2025, 1, 10), date(2025, 2, 10), date(2026, 4, 8), date(2026, 10, 5)]  # 05/10 − 180 días = 08/04
+    ventas = [Venta(f"v{i:03d}", "c001", "p001", 1, 10.0, d) for i, d in enumerate(dias)]
+    perfil = perfil_cliente("c001", ventas, datos.productos, HOY)
+    assert (perfil.n_compras, perfil.compras_recientes) == (4, 2)
+
+
+def test_con_una_sola_compra_no_hay_intervalo(datos):
+    perfil = perfil_cliente("c005", datos.ventas, datos.productos, HOY)
+    assert perfil.intervalo_promedio is None
+
+
+def test_frecuente_depende_de_las_compras_recientes(datos):
+    from ventas.modelos import Cliente
+
+    cliente = ClienteRegular("c001", "Juan", "")
+    viejo = PerfilCliente("c001", 5, date(2025, 1, 1), 600, 100.0, 20.0, (), compras_recientes=0)
+    reciente = PerfilCliente("c001", 3, date(2026, 10, 1), 4, 100.0, 33.0, (), compras_recientes=3)
+    assert isinstance(clasificar_cliente(cliente, viejo), ClienteRegular)
+    assert isinstance(clasificar_cliente(cliente, reciente), ClienteFrecuente)
+    assert issubclass(ClienteFrecuente, Cliente)
+
+
+def test_sin_compras_recientes_explicitas_se_asumen_todas():
+    assert PerfilCliente("c001", 4, date(2026, 9, 1), 4, 10.0, 2.5, ()).compras_recientes == 4

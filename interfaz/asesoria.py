@@ -7,8 +7,8 @@ from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
 from ventas import administracion as admin
 from ventas.contactos import RESULTADOS, conversion, pospuestos, ultimo_contacto
-from ventas.funcional import UMBRAL_FRECUENTE
-from ventas.logico import DIAS_INACTIVIDAD
+from ventas.funcional import UMBRAL_FRECUENTE, VENTANA_FRECUENCIA
+from ventas.mensajes import enumerar
 from ventas.modelos import ClienteFrecuente
 from ventas.ofertas import ofertas_vigentes
 from ventas.pedido import armar_pedido_manual
@@ -247,10 +247,19 @@ def mostrar_por_que(t: TarjetaAgenda) -> None:
     accion = t.entrada.accion
     st.markdown("**Reglas de Prolog que se aplicaron**")
     st.markdown("".join(estilo.chip(m) for m in accion.motivos), unsafe_allow_html=True)
+    perfil = t.entrada.perfil
+    if perfil.intervalo_promedio is None:
+        ritmo = "Todavía no tiene un ritmo de compra"
+    else:
+        ritmo = f"Compra cada {perfil.intervalo_promedio:g} días en promedio"
     st.caption(
-        f"Frecuente: {UMBRAL_FRECUENTE} compras o más. "
-        f"Inactivo: más de {DIAS_INACTIVIDAD} días sin comprar."
+        f"Frecuente: {UMBRAL_FRECUENTE} compras o más en los últimos {VENTANA_FRECUENCIA} días "
+        f"(lleva {perfil.compras_recientes}). {ritmo}: se considera inactivo pasados "
+        f"{t.limite_inactividad} días sin comprar."
     )
+    if t.complementos:
+        partes = [f"{p.nombre} ({dinero(p.precio)})" for p in t.complementos]
+        st.markdown(f"**Complementa lo que compró:** {enumerar(partes)}")
     if t.ofertas:
         st.markdown("**Ofertas pensadas para este cliente**")
         st.dataframe(

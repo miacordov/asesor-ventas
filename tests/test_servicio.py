@@ -38,22 +38,22 @@ def tarjetas(datos, motor):
 # Tarjetas de la agenda
 # =====================================================================
 def test_orden_de_las_tarjetas(tarjetas):
-    assert [t.cliente.id_cliente for t in tarjetas] == ["c001", "c007", "c002", "c004", "c008", "c003", "c005"]
+    assert [t.cliente.id_cliente for t in tarjetas] == ["c001", "c007", "c004", "c002", "c008", "c003"]
 
 
 def test_clientes_clasificados(tarjetas):
     tipos = {t.cliente.id_cliente: type(t.cliente) for t in tarjetas}
     assert tipos["c001"] is ClienteFrecuente
     assert tipos["c003"] is ClienteRegular
-    assert tipos["c005"] is ClienteRegular
+    assert "c005" not in tipos  # Luis no tiene clientes similares: no hay nada que ofrecerle
 
 
 def test_clientes_similares_calculados_a_mano(tarjetas):
-    # Juan comparte productos con 5 clientes; Pedro, Luis y los demás, según sus compras.
+    # Similares: 2 o más productos en común. Juan: c002, c003, c004, c007 (c008 solo
+    # comparte p002). Pedro: c001, c002, c003, c004, c008 (Luis solo comparte p009).
     similares = {t.cliente.id_cliente: t.clientes_similares for t in tarjetas}
-    assert similares["c001"] == 5
-    assert similares["c007"] == 6
-    assert similares["c005"] == 5
+    assert similares["c001"] == 4
+    assert similares["c007"] == 5
 
 
 def test_confianza_es_soporte_sobre_similares(tarjetas):
@@ -74,20 +74,16 @@ def test_pedidos_de_juan(tarjetas):
     assert pedido.total_con_descuento == 607.5
 
 
-def test_luis_tiene_varios_pedidos_ordenados(tarjetas):
-    luis = next(t for t in tarjetas if t.cliente.id_cliente == "c005")
-    assert [p.pedido.ids for p in luis.pedidos] == [
-        ("p002", "p005", "p007"),
-        ("p003", "p005", "p007"),
-        ("p005", "p006", "p007"),
-    ]
+def test_pedido_de_maria_en_su_tarjeta(tarjetas):
+    maria = next(t for t in tarjetas if t.cliente.id_cliente == "c002")
+    assert [p.pedido.ids for p in maria.pedidos] == [("p006", "p007", "p010")]
 
 
 def test_limite_de_pedidos(datos, motor):
     uno = construir_tarjetas(datos, HOY, motor, max_pedidos=1)
-    luis = next(t for t in uno if t.cliente.id_cliente == "c005")
-    assert len(luis.pedidos) == 1
+    assert len(uno[0].pedidos) == 1
     assert all(len(t.pedidos) <= 1 for t in uno)
+    assert all(t.pedidos == () for t in construir_tarjetas(datos, HOY, motor, max_pedidos=0))
 
 
 def test_el_mensaje_coincide_con_el_primer_pedido(tarjetas):
@@ -187,11 +183,10 @@ def test_acciones_por_cliente(datos, motor):
     assert acciones_por_cliente(datos, HOY, motor) == {
         "c001": "reactivar",
         "c007": "reactivar",
+        "c004": "reactivar",
         "c002": "fidelizar",
-        "c004": "fidelizar",
         "c008": "fidelizar",
         "c003": "cruzar",
-        "c005": "cruzar",
     }
 
 
@@ -266,3 +261,29 @@ def test_la_propuesta_guardada_reemplaza_el_mensaje_automatico(datos, motor, tar
     )
     # Los demás clientes no cambian.
     assert [t for t in nuevas if t.cliente.id_cliente != "c001"] == [t for t in tarjetas if t.cliente.id_cliente != "c001"]
+
+
+def test_cada_cliente_se_calcula_una_sola_vez(datos, motor, monkeypatch):
+    llamadas = {"recomendar": 0, "armar_pedidos": 0}
+    for nombre in llamadas:
+        original = getattr(motor, nombre)
+
+        def contar(*args, _original=original, _nombre=nombre, **kwargs):
+            llamadas[_nombre] += 1
+            return _original(*args, **kwargs)
+
+        monkeypatch.setattr(motor, nombre, contar)
+    sin_duplicar = construir_tarjetas(datos, HOY, motor)
+    recomendar_por_tarjeta, pedidos_por_tarjeta = dict(llamadas).values()
+    # Lo mismo que antes, pero la tarjeta y el mensaje comparten las cuentas.
+    assert recomendar_por_tarjeta == len(sin_duplicar)
+    llamadas.update(recomendar=0, armar_pedidos=0)
+    construir_tarjetas(datos, HOY, motor, max_pedidos=1)
+    assert llamadas["armar_pedidos"] == pedidos_por_tarjeta  # el mensaje no vuelve a armar pedidos
+
+
+def test_la_tarjeta_trae_los_complementos_de_lo_que_compro(tarjetas):
+    # Juan compró cómputo, periféricos y accesorios: le faltan almacenamiento,
+    # audio, mobiliario y monitores (el catálogo de prueba no tiene RAM).
+    juan = tarjetas[0]
+    assert [p.id_producto for p in juan.complementos] == ["p008", "p005", "p010", "p004"]

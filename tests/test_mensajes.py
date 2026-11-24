@@ -204,7 +204,7 @@ def test_frase_oferta_sin_nada():
 def test_un_mensaje_por_entrada_y_en_el_mismo_orden(datos, motor, mensajes):
     agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, HOY, motor)
     assert [m.id_cliente for m in mensajes] == [e.accion.id_cliente for e in agenda]
-    assert [m.id_cliente for m in mensajes] == ["c001", "c007", "c002", "c004", "c008", "c003", "c005"]
+    assert [m.id_cliente for m in mensajes] == ["c001", "c007", "c004", "c002", "c008", "c003"]
 
 
 def test_mensaje_de_juan_reactivar_con_descuento(mensajes):
@@ -217,11 +217,12 @@ def test_mensaje_de_juan_reactivar_con_descuento(mensajes):
 
 def test_mensaje_de_ana_sin_combinacion_menciona_sus_recomendaciones(mensajes):
     # Con S/ 126 solo le cabe el teclado: un producto solo no es combinación.
+    # Compra cada ~16 días y lleva 25 sin venir: el mensaje es de reactivación.
     ana = next(m for m in mensajes if m.id_cliente == "c004")
     assert ana.texto == (
-        "Hola Ana, gracias por seguir eligiéndonos. "
+        "Hola Ana, hace 25 días que no nos visitas y queremos saber cómo estás. "
         "Creemos que te pueden interesar: Teclado mecánico, Laptop 14 pulgadas y Monitor 24 pulgadas. "
-        "¡Gracias por tu confianza!"
+        "¡Te esperamos!"
     )
 
 
@@ -270,7 +271,7 @@ def test_cliente_sin_telefono_igual_recibe_mensaje_sin_enlace(datos, motor):
     sin_telefono = tuple(ClienteRegular(c.id_cliente, c.nombre, "") for c in datos.clientes)
     agenda = construir_agenda(sin_telefono, datos.ventas, datos.productos, HOY, motor)
     resultado = mensajes_para_agenda(agenda, sin_telefono, datos.productos, motor)
-    assert len(resultado) == 7
+    assert len(resultado) == 6
     assert all(m.enlace is None and m.texto for m in resultado)
 
 
@@ -284,7 +285,7 @@ def test_los_mensajes_son_deterministas(datos, motor):
 def test_acepta_generadores(datos, motor):
     agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, HOY, motor)
     resultado = mensajes_para_agenda(iter(agenda), iter(datos.clientes), iter(datos.productos), motor)
-    assert len(resultado) == 7
+    assert len(resultado) == 6
 
 
 def test_el_mensaje_cambia_si_cambia_la_fecha(datos, motor):

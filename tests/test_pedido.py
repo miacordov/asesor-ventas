@@ -305,15 +305,17 @@ def test_pedido_de_juan(datos, motor):
     assert sugerido.pedido.subtotal == 675.0
     assert sugerido.presupuesto == 972.0
     assert sugerido.recomendados_incluidos == ("p009", "p005", "p004")
-    assert sugerido.puntaje == pytest.approx(2.2)
+    assert sugerido.puntaje == pytest.approx(2.25)  # confianzas 1 + 0,75 + 0,5 (4 clientes similares)
     assert sugerido.total_con_descuento == 607.5  # cliente frecuente: -10%
 
 
 def test_pedido_de_maria(datos, motor):
+    # Presupuesto 711,70. p008 ya no se recomienda: solo lo compró Luis, que no es
+    # similar a María (comparten solo p009). Quedan p006 + p007 + p010 = 110 + 85 + 450.
     (sugerido,) = sugeridos(datos, motor, "c002")
-    assert sugerido.pedido.ids == ("p006", "p007", "p008")
-    assert sugerido.pedido.subtotal == 425.0
-    assert sugerido.total_con_descuento == 382.5
+    assert sugerido.pedido.ids == ("p006", "p007", "p010")
+    assert sugerido.pedido.subtotal == 645.0
+    assert sugerido.total_con_descuento == 580.5
 
 
 def test_sin_dos_productos_que_quepan_no_se_sugiere_pedido(datos, motor):
@@ -329,21 +331,29 @@ def test_respaldo_nunca_baja_a_un_solo_producto(datos, motor):
     assert sugeridos(datos, motor, "c008") == ()
 
 
-def test_varios_pedidos_ordenados_por_puntaje(datos, motor):
-    # Luis (c005), presupuesto 319: perifericos + audio + accesorios (p007).
-    # Confianzas: p002 = 1.0, p003 = 0.6, p006 = 0.4, p005 = 0.8, p007 = 0.2
-    resultado = sugeridos(datos, motor, "c005")
-    assert [s.pedido.ids for s in resultado] == [
-        ("p002", "p005", "p007"),
-        ("p003", "p005", "p007"),
-        ("p005", "p006", "p007"),
-    ]
-    assert [s.puntaje for s in resultado] == pytest.approx([2.0, 1.6, 1.4])
+def test_varios_pedidos_ordenados_por_puntaje():
+    # Presupuesto 22 (20 + 10 %): un periférico (q1 o q2) con el audio q3.
+    catalogo = (
+        Producto("q1", "Mouse A", "perifericos", 10.0),
+        Producto("q2", "Mouse B", "perifericos", 12.0),
+        Producto("q3", "Audífonos", "audio", 5.0),
+    )
+    recs = (
+        Recomendacion("c001", "q1", 9, 0.9),
+        Recomendacion("c001", "q3", 8, 0.8),
+        Recomendacion("c001", "q2", 5, 0.5),
+    )
+    perfil = PerfilCliente("c001", 1, date(2026, 9, 1), 4, 20.0, 20.0, ())
+    puente = PuenteProlog()
+    puente.cargar_compras([])
+    resultado = pedidos_para_cliente(ClienteRegular("c001", "Juan", ""), perfil, recs, catalogo, puente)
+    assert [s.pedido.ids for s in resultado] == [("q1", "q3"), ("q2", "q3")]
+    assert [s.puntaje for s in resultado] == pytest.approx([1.7, 1.3])
 
 
 def test_limite_de_pedidos_sugeridos(datos, motor):
-    assert len(sugeridos(datos, motor, "c005", n=1)) == 1
-    assert sugeridos(datos, motor, "c005", n=0) == ()
+    assert len(sugeridos(datos, motor, "c001", n=1)) == 1
+    assert sugeridos(datos, motor, "c001", n=0) == ()
 
 
 def test_margen_mayor_amplia_las_opciones(datos, motor):
@@ -364,8 +374,9 @@ def test_cliente_sin_compras_o_sin_recomendaciones(datos, motor):
 def test_invariantes_de_todos_los_pedidos(datos, motor, id_cliente):
     propios = {v.id_producto for v in datos.ventas if v.id_cliente == id_cliente}
     resultado = sugeridos(datos, motor, id_cliente)
-    # Carlos, Ana y Lucía no tienen dos productos que quepan juntos en su presupuesto.
-    assert bool(resultado) == (id_cliente not in {"c003", "c004", "c008"})
+    # Carlos, Ana y Lucía no tienen dos productos que quepan juntos en su presupuesto;
+    # Luis no tiene clientes similares, así que no hay recomendaciones para él.
+    assert bool(resultado) == (id_cliente not in {"c003", "c004", "c005", "c008"})
     for s in resultado:
         assert len(s.pedido.ids) >= 2
         assert s.pedido.subtotal <= s.presupuesto

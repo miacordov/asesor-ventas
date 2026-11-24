@@ -6,7 +6,7 @@ import pytest
 
 from ventas.cargador import cargar_todo
 from ventas.logico import MotorLogico, PuenteProlog, pares_compra
-from ventas.modelos import Venta
+from ventas.modelos import Producto, Venta
 
 DATOS = Path(__file__).resolve().parent / "datos"
 CLIENTES = ["c001", "c002", "c003", "c004", "c005", "c006", "c007", "c008"]
@@ -35,7 +35,10 @@ def oraculo(ventas, cliente):
     for v in ventas:
         compras[v.id_cliente].add(v.id_producto)
     propios = compras[cliente]
-    similares = {o for o, ps in compras.items() if o != cliente and ps & propios}
+    if not propios:
+        return {}
+    minimo = min(2, len(propios))  # al menos 2 productos en común (o todos los suyos)
+    similares = {o for o, ps in compras.items() if o != cliente and len(ps & propios) >= minimo}
     if not similares:
         return {}
     candidatos = defaultdict(set)
@@ -66,14 +69,14 @@ def test_pares_compra_vacio():
 
 # ---------- resultados calculados a mano para c001 ----------
 def test_recomendaciones_de_c001_calculadas_a_mano(motor):
-    # c001 compró p001, p002, p003, p007. Sus similares son c002, c003, c004,
-    # c007 y c008 (c005 no comparte ningún producto con él): 5 clientes.
+    # c001 compró p001, p002, p003, p007. Sus similares (2 o más productos en
+    # común) son c002, c003, c004 y c007; c008 solo comparte p002: 4 clientes.
     esperado = [
-        ("p009", 5, 1.0),
-        ("p005", 4, 0.8),
-        ("p004", 2, 0.4),
-        ("p006", 2, 0.4),
-        ("p010", 1, 0.2),
+        ("p009", 4, 1.0),
+        ("p005", 3, 0.75),
+        ("p004", 2, 0.5),
+        ("p006", 1, 0.25),
+        ("p010", 1, 0.25),
     ]
     obtenido = [(r.id_producto, r.soporte, r.confianza) for r in motor.recomendar("c001")]
     assert [(p, s) for p, s, _ in obtenido] == [(p, s) for p, s, _ in esperado]
@@ -184,3 +187,58 @@ def test_recomendar_rechaza_ids_peligrosos(motor, malo):
 def test_respaldo_rechaza_ids_peligrosos(motor):
     with pytest.raises(ValueError):
         motor.respaldo("c001", "p001); halt(")
+
+
+# ---------- similitud estricta ----------
+def test_un_solo_producto_en_comun_no_alcanza_si_compro_varios():
+    motor = PuenteProlog()
+    motor.cargar_compras([
+        venta("v1", "c001", "p001"), venta("v2", "c001", "p002"),
+        venta("v3", "c002", "p001"), venta("v4", "c002", "p009"),  # solo p001 en común
+        venta("v5", "c003", "p001"), venta("v6", "c003", "p002"), venta("v7", "c003", "p005"),
+    ])
+    assert [r.id_producto for r in motor.recomendar("c001")] == ["p005"]
+    assert motor.respaldo("c001", "p005") == ("c003",)
+
+
+def test_quien_compro_un_solo_producto_se_parece_a_quien_tambien_lo_compro():
+    motor = PuenteProlog()
+    motor.cargar_compras([venta("v1", "c001", "p001"), venta("v2", "c002", "p001"), venta("v3", "c002", "p004")])
+    assert [r.id_producto for r in motor.recomendar("c001")] == ["p004"]
+
+
+# ---------- complementos por categoría ----------
+CATALOGO_COMPLEMENTOS = (
+    Producto("g001", "Gráfica", "graficas", 1500.0),
+    Producto("r001", "RAM 16 GB", "memoria_ram", 200.0),
+    Producto("r002", "RAM 8 GB", "memoria_ram", 150.0),
+    Producto("m001", "Monitor", "monitores", 500.0),
+    Producto("a001", "Parlantes", "audio", 50.0),
+)
+
+
+def motor_complementos(ventas):
+    puente = PuenteProlog()
+    puente.cargar_compras(ventas)
+    puente.cargar_catalogo(CATALOGO_COMPLEMENTOS)
+    return puente
+
+
+def test_a_quien_compro_una_grafica_se_le_sugiere_ram_y_monitor():
+    motor = motor_complementos([venta("v1", "c001", "g001")])
+    # el más barato de cada categoría complementaria, por categoría
+    assert motor.complementos("c001") == ("r002", "m001")
+
+
+def test_no_sugiere_una_categoria_que_ya_compra():
+    motor = motor_complementos([venta("v1", "c001", "g001"), venta("v2", "c001", "r001")])
+    assert motor.complementos("c001") == ("m001",)
+
+
+def test_sin_compras_no_hay_complementos():
+    assert motor_complementos([]).complementos("c001") == ()
+
+
+def test_complementos_rechaza_ids_peligrosos():
+    with pytest.raises(ValueError):
+        motor_complementos([]).complementos("X), halt, (true")

@@ -33,6 +33,10 @@ class MotorAsesor(Protocol):
 
     def cargar_catalogo(self, productos: Iterable[Producto]) -> None: ...
 
+    def complementos(self, id_cliente: str) -> tuple[str, ...]: ...
+
+    def limite_inactividad(self, id_cliente: str) -> int | None: ...
+
     def armar_pedidos(
         self,
         presupuesto: float,
@@ -209,25 +213,30 @@ def mensajes_para_agenda(
     ventas = tuple(ventas)
     mensajes = []
     for entrada in agenda:
-        base = por_id[entrada.accion.id_cliente]
-        cliente = clasificar_cliente(base, entrada.perfil)
-        recomendaciones = motor.recomendar(cliente.id_cliente)
+        cliente = clasificar_cliente(por_id[entrada.accion.id_cliente], entrada.perfil)
         sugeridos = pedidos_para_cliente(
             cliente,
             entrada.perfil,
-            recomendaciones,
+            motor.recomendar(cliente.id_cliente),
             productos,
             motor,
             n=1,
             vigentes=vigentes,
             comprados=productos_comprados(ventas, cliente.id_cliente),
         )
-        texto = redactar_mensaje(
-            entrada.accion.tipo,
-            cliente,
-            entrada.perfil,
-            sugeridos[0] if sugeridos else None,
-            [nombre_de[r.id_producto] for r in recomendaciones[:3]],
-        )
-        mensajes.append(Mensaje(cliente.id_cliente, cliente.nombre, cliente.telefono, entrada.accion.tipo, texto))
+        mensajes.append(mensaje_de_entrada(entrada, cliente, sugeridos[0] if sugeridos else None, nombre_de))
     return tuple(mensajes)
+
+
+def mensaje_de_entrada(
+    entrada: EntradaAgenda, cliente: Cliente, pedido: PedidoSugerido | None, nombre_de: Mapping[str, str]
+) -> Mensaje:
+    """El mensaje de una entrada de la agenda con un pedido ya calculado."""
+    texto = redactar_mensaje(
+        entrada.accion.tipo,
+        cliente,
+        entrada.perfil,
+        pedido,
+        [nombre_de[r.id_producto] for r in entrada.recomendaciones[:3]],
+    )
+    return Mensaje(cliente.id_cliente, cliente.nombre, cliente.telefono, entrada.accion.tipo, texto)

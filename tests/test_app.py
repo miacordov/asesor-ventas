@@ -110,7 +110,7 @@ def test_navegar_muchas_veces_no_falla():
     for pagina in ("pedido", "agenda", "resumen", "agenda", "clientes", "registro_ventas", "agenda"):
         at.switch_page(f"paginas/{pagina}.py").run()
         assert ok(at), pagina
-    assert len(tarjetas(at)) == 7
+    assert len(tarjetas(at)) == 6
 
 
 def test_la_fecha_de_referencia_se_puede_fijar_con_asesor_fecha():
@@ -165,24 +165,24 @@ def test_los_datos_persisten_al_reiniciar_la_aplicacion(tmp_path, monkeypatch):
 # =====================================================================
 # Agenda
 # =====================================================================
-def test_agenda_muestra_los_siete_contactos_en_orden():
+def test_agenda_muestra_los_seis_contactos_en_orden():
+    # Ana pasa a reactivar (compra cada ~16 días y lleva 25); Luis no tiene clientes similares.
     assert tarjetas(abrir()) == [
         "1. Juan Pérez",
         "2. Pedro Salas",
-        "3. María Torres",
-        "4. Ana Ríos",
+        "3. Ana Ríos",
+        "4. María Torres",
         "5. Lucía Mendoza",
         "6. Carlos Ruiz",
-        "7. Luis Vega",
     ]
 
 
 def test_agenda_indicadores_calculados_a_mano():
     assert indicadores(abrir()) == {
-        "Contactos": "7",
-        "Por reactivar": "2",
-        "Por fidelizar": "3",
-        "Complementar": "2",
+        "Contactos": "6",
+        "Por reactivar": "3",
+        "Por fidelizar": "2",
+        "Complementar": "1",
         "Conversión (15 días)": "—",  # todavía no se registró ningún contacto
     }
 
@@ -197,8 +197,8 @@ def registrar_contacto(at: AppTest, id_cliente: str, resultado: str, dias: int |
 def test_registrar_un_contacto_lo_saca_de_la_agenda_hasta_volver():
     at = registrar_contacto(abrir(), "c001", "no_responde")  # vuelve en 7 días
     assert ok(at) and "Contacto con Juan Pérez registrado: No responde. Vuelve a la agenda el 12/10/2026." in exito(at)
-    assert "1. Juan Pérez" not in tarjetas(at) and len(tarjetas(at)) == 6
-    assert indicadores(at)["Contactos"] == "6"
+    assert "1. Juan Pérez" not in tarjetas(at) and len(tarjetas(at)) == 5
+    assert indicadores(at)["Contactos"] == "5"
     at.toggle(key="ver_pospuestos").set_value(True).run()
     assert "Juan Pérez" in " ".join(tarjetas(at))
     assert any("Último contacto: 05/10/2026 · No responde · vuelve el 12/10/2026" in c.value for c in at.caption)
@@ -221,7 +221,7 @@ def test_agenda_no_incluye_a_rosa_sin_compras():
 
 def test_cada_tarjeta_tiene_su_boton_de_whatsapp_con_el_mensaje():
     botones = abrir().get("link_button")
-    assert len(botones) == 7
+    assert len(botones) == 6
     for b in botones:
         url = urlparse(b.proto.url)
         assert url.netloc == "wa.me" and url.path[1:].isdigit()
@@ -233,30 +233,31 @@ def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
     at = abrir()
     assert "Compró 3 veces, lleva 40 días sin comprar" in [m.value for m in at.markdown]
     assert ("S/ 675.00", "S/ 607.50") in totales(at)  # Juan: precio tachado y total con descuento
-    assert ("", "S/ 225.00") in totales(at)  # Luis es regular: sin descuento
+    assert ("S/ 645.00", "S/ 580.50") in totales(at)  # María: p006 + p007 + p010
     assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
 def test_cada_tarjeta_tiene_porque_y_mensaje():
     etiquetas = [p.proto.popover.label for p in abrir().get("popover")]
-    assert etiquetas.count("¿Por qué?") == 7 and etiquetas.count("Mensaje") == 7
+    assert etiquetas.count("¿Por qué?") == 6 and etiquetas.count("Mensaje") == 6
 
 
 def test_filtrar_la_agenda_por_tipo_de_accion():
     at = abrir()
     at.get("button_group")[0].set_value("Reactivar").run()
     assert ok(at)
-    assert tarjetas(at) == ["1. Juan Pérez", "2. Pedro Salas"]
+    assert tarjetas(at) == ["1. Juan Pérez", "2. Pedro Salas", "3. Ana Ríos"]
     at.get("button_group")[0].set_value("Complementar").run()
-    assert tarjetas(at) == ["6. Carlos Ruiz", "7. Luis Vega"]  # conservan su posición en la agenda
+    assert tarjetas(at) == ["6. Carlos Ruiz"]  # conserva su posición en la agenda
 
 
 def test_la_agenda_cambia_con_la_fecha_de_referencia():
     at = abrir()
     at.sidebar.date_input[0].set_value(date(2026, 10, 20)).run()
     assert ok(at)
-    assert indicadores(at)["Por reactivar"] == "3"  # Ana (última compra el 10-sep) ya está inactiva
-    assert "3. Ana Ríos" in tarjetas(at)
+    # Lucía compra cada 4 días (límite 15) y lleva 17 sin venir: se suma a reactivar.
+    assert indicadores(at)["Por reactivar"] == "4"
+    assert "4. Lucía Mendoza" in tarjetas(at)
 
 
 @pytest.mark.parametrize("pagina", ["agenda", "clientes", "registro_ventas"])
@@ -781,8 +782,8 @@ def test_la_venta_registrada_cambia_la_agenda():
     boton(at, "Registrar venta").click().run()
     at.switch_page("paginas/agenda.py").run()
     assert ok(at)
-    assert (indicadores(at)["Por reactivar"], indicadores(at)["Por fidelizar"]) == ("1", "4")
-    assert tarjetas(at)[:2] == ["1. Pedro Salas", "2. Juan Pérez"]
+    assert (indicadores(at)["Por reactivar"], indicadores(at)["Por fidelizar"]) == ("2", "3")
+    assert tarjetas(at)[:3] == ["1. Pedro Salas", "2. Ana Ríos", "3. Juan Pérez"]
 
 
 def test_el_total_de_la_venta_se_calcula_al_cambiar_la_cantidad():
@@ -895,3 +896,19 @@ def test_un_producto_con_simbolos_no_rompe_el_diseno():
     filas = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
     assert "Mouse &lt;Pro&gt; &amp; Cía" in filas
     assert "<Pro>" not in filas
+
+
+def test_la_tarjeta_sugiere_complementos_de_lo_que_compro():
+    textos = [m.value for m in abrir().markdown]
+    assert (
+        "**Complementa lo que compró:** Disco externo 1TB (S/ 230.00), Auriculares con micrófono (S/ 95.00), "
+        "Silla ergonómica (S/ 450.00) y Monitor 24 pulgadas (S/ 520.00)"
+    ) in textos
+
+
+def test_el_por_que_explica_el_ritmo_propio_del_cliente():
+    captions = [c.value for c in abrir().caption]
+    assert (
+        "Frecuente: 3 compras o más en los últimos 180 días (lleva 3). "
+        "Compra cada 18.5 días en promedio: se considera inactivo pasados 28 días sin comprar."
+    ) in captions
