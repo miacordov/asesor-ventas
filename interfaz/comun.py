@@ -10,15 +10,20 @@ import streamlit as st
 from ventas.administracion import asegurar_datos
 from ventas.cargador import Datos
 from ventas.combos import Combo
+from ventas.contactos import Contacto
 from ventas.logico import PuenteProlog
 from ventas.mensajes import dinero
 from ventas.ofertas import Oferta
-from ventas.propuestas import Propuesta
 from ventas.repositorio import RepositorioSQLite
 
 RAIZ = Path(__file__).resolve().parent.parent
 CARPETA_CSV = RAIZ / "datos"
-FECHA_DEMO = date(2026, 10, 5)  # fecha fija para que la demostración sea reproducible
+def fecha_inicial() -> date:
+    """Hoy. Con ASESOR_FECHA=AAAA-MM-DD se fija otra fecha (demostraciones y pruebas)."""
+    try:
+        return date.fromisoformat(os.environ["ASESOR_FECHA"])
+    except (KeyError, ValueError):
+        return date.today()
 
 NOMBRES_CATEGORIA = {
     "computo": "Cómputo",
@@ -32,6 +37,13 @@ NOMBRES_CATEGORIA = {
     "memorias": "Memorias USB y microSD",
     "memoria_ram": "Memoria RAM",
 }
+
+
+def texto_stock(producto) -> str:
+    """«Sin control», «Agotado» o las unidades que quedan."""
+    if producto.stock is None:
+        return "Sin control"
+    return "Agotado" if producto.stock == 0 else str(producto.stock)
 
 
 def nombre_categoria(categoria: str) -> str:
@@ -66,14 +78,48 @@ def datos() -> Datos:
     return repositorio().cargar_todo()
 
 
+def contactos() -> tuple[Contacto, ...]:
+    """Los contactos registrados desde la agenda."""
+    return repositorio().cargar_contactos()
+
+
 def combos() -> tuple[Combo, ...]:
     """Las combinaciones guardadas desde «Arma mi pedido» (pendientes o registradas)."""
     return repositorio().cargar_combos()
 
 
-def propuestas() -> tuple[Propuesta, ...]:
-    """Las propuestas armadas a mano y guardadas en la agenda."""
-    return repositorio().cargar_propuestas()
+def html_cotizacion(cotizacion, titulo: str = "") -> str:
+    """Las líneas del pedido y su total, con la única regla de precio:
+    ofertas (o precios acordados) y el descuento del pedido."""
+    from interfaz import estilo  # estilo no depende de comun
+
+    def nota(linea) -> str:
+        if linea.oferta:
+            return (
+                f"Oferta -{linea.oferta.porcentaje} % hasta el {linea.oferta.hasta:%d/%m/%Y} · "
+                f"antes {dinero(linea.producto.precio)}"
+            )
+        if linea.precio_fijo is not None and linea.en_oferta:
+            return f"Precio acordado · antes {dinero(linea.producto.precio)}"
+        return nombre_categoria(linea.producto.categoria)
+
+    filas = "".join(
+        estilo.fila_producto(linea.producto.nombre, linea.producto.categoria, dinero(linea.precio), nota(linea))
+        for linea in cotizacion.lineas
+    )
+    normal = round(sum(linea.producto.precio for linea in cotizacion.lineas), 2)
+    if cotizacion.descuento:
+        cierre = estilo.total(
+            "Total", dinero(cotizacion.total), tachado=dinero(cotizacion.subtotal), nota=f"{cotizacion.descuento} % de descuento"
+        )
+    elif cotizacion.total < normal:
+        cierre = estilo.total(
+            "Total", dinero(cotizacion.total), tachado=dinero(normal), nota=f"Ahorras {dinero(normal - cotizacion.total)} con las ofertas"
+        )
+    else:
+        cierre = estilo.total("Total", dinero(cotizacion.total))
+    cabecera = f'<div class="pedido-titulo">{titulo}</div>' if titulo else ""
+    return cabecera + filas + cierre
 
 
 def ofertas() -> tuple[Oferta, ...]:
@@ -85,7 +131,7 @@ def ofertas() -> tuple[Oferta, ...]:
 # Fecha de referencia y mensajes entre ejecuciones
 # ---------------------------------------------------------------------
 def fecha_referencia() -> date:
-    return st.session_state.get("fecha_referencia", FECHA_DEMO)
+    return st.session_state.get("fecha_referencia", fecha_inicial())
 
 
 def fecha_valida(datos_: Datos, hoy: date) -> bool:

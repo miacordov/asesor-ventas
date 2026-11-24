@@ -128,3 +128,23 @@ def test_recomendacion_confianza_fuera_de_rango(confianza):
 def test_recomendacion_soporte_minimo():
     with pytest.raises(ValueError):
         Recomendacion("c001", "p002", soporte=0, confianza=0.5)
+
+
+# ---------- costo y stock ----------
+def test_producto_con_costo_y_stock():
+    p = Producto("p001", "Mouse", "perifericos", 45.0, costo=30.0, stock=12)
+    assert (p.costo, p.stock, p.margen) == (30.0, 12, 15.0)
+
+
+def test_sin_costo_no_hay_margen_y_el_stock_no_se_controla():
+    p = Producto("p001", "Mouse", "perifericos", 45.0)
+    assert (p.costo, p.stock, p.margen) == (None, None, None)
+
+
+@pytest.mark.parametrize(
+    ("costo", "stock", "mensaje"),
+    [(0, None, "costo"), (-5, None, "costo"), ("30", None, "costo"), (None, -1, "stock"), (None, 1.5, "stock"), (None, True, "stock")],
+)
+def test_costo_o_stock_invalido(costo, stock, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        Producto("p001", "Mouse", "perifericos", 45.0, costo=costo, stock=stock)

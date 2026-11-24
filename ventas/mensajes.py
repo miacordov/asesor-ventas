@@ -16,11 +16,11 @@ from typing import Protocol
 from urllib.parse import quote
 
 from ventas.agenda import EntradaAgenda
+from ventas.combos import Cotizacion
 from ventas.funcional import PerfilCliente, clasificar_cliente
 from ventas.modelos import Cliente, Producto, Recomendacion, _validar_id, _validar_texto
 from ventas.ofertas import Oferta
 from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
-from ventas.propuestas import Propuesta
 
 # Formato internacional de WhatsApp: solo dígitos, sin "+", sin cero inicial, hasta 15.
 _PATRON_TELEFONO = re.compile(r"^[1-9]\d{7,14}$")
@@ -32,6 +32,10 @@ class MotorAsesor(Protocol):
     def recomendar(self, id_cliente: str) -> tuple[Recomendacion, ...]: ...
 
     def cargar_catalogo(self, productos: Iterable[Producto]) -> None: ...
+
+    def complementos(self, id_cliente: str) -> tuple[str, ...]: ...
+
+    def limite_inactividad(self, id_cliente: str) -> int | None: ...
 
     def armar_pedidos(
         self,
@@ -148,16 +152,17 @@ def redactar_mensaje(
     return " ".join(parte for parte in partes if parte)
 
 
-def mensaje_propuesta(cliente: Cliente, propuesta: Propuesta, nombres: Mapping[str, str]) -> str:
-    """Texto para WhatsApp con el combo, las ofertas y el descuento acordado."""
-    items = [f"{nombres[linea.id_producto]}{' (en oferta)' if linea.en_oferta else ''}" for linea in propuesta.lineas]
+def mensaje_pedido(nombre: str, cotizacion: Cotizacion) -> str:
+    """Texto para WhatsApp con el pedido, sus ofertas y el descuento."""
+    items = [f"{linea.producto.nombre}{' (en oferta)' if linea.en_oferta else ''}" for linea in cotizacion.lineas]
     precio = (
-        f"por {dinero(propuesta.subtotal)}, y con tu {propuesta.descuento} % de descuento te queda en {dinero(propuesta.total)}"
-        if propuesta.descuento
-        else f"por {dinero(propuesta.total)}"
+        f"por {dinero(cotizacion.subtotal)}, y con tu {cotizacion.descuento} % de descuento "
+        f"te queda en {dinero(cotizacion.total)}"
+        if cotizacion.descuento
+        else f"por {dinero(cotizacion.total)}"
     )
     return (
-        f"Hola {primer_nombre(cliente.nombre)}, te preparamos una propuesta especial: "
+        f"Hola {primer_nombre(nombre)}, te preparamos un pedido especial: "
         f"{enumerar(items)} {precio}. ¡Escríbenos si te interesa!"
     )
 
@@ -209,25 +214,30 @@ def mensajes_para_agenda(
     ventas = tuple(ventas)
     mensajes = []
     for entrada in agenda:
-        base = por_id[entrada.accion.id_cliente]
-        cliente = clasificar_cliente(base, entrada.perfil)
-        recomendaciones = motor.recomendar(cliente.id_cliente)
+        cliente = clasificar_cliente(por_id[entrada.accion.id_cliente], entrada.perfil)
         sugeridos = pedidos_para_cliente(
             cliente,
             entrada.perfil,
-            recomendaciones,
+            motor.recomendar(cliente.id_cliente),
             productos,
             motor,
             n=1,
             vigentes=vigentes,
             comprados=productos_comprados(ventas, cliente.id_cliente),
         )
-        texto = redactar_mensaje(
-            entrada.accion.tipo,
-            cliente,
-            entrada.perfil,
-            sugeridos[0] if sugeridos else None,
-            [nombre_de[r.id_producto] for r in recomendaciones[:3]],
-        )
-        mensajes.append(Mensaje(cliente.id_cliente, cliente.nombre, cliente.telefono, entrada.accion.tipo, texto))
+        mensajes.append(mensaje_de_entrada(entrada, cliente, sugeridos[0] if sugeridos else None, nombre_de))
     return tuple(mensajes)
+
+
+def mensaje_de_entrada(
+    entrada: EntradaAgenda, cliente: Cliente, pedido: PedidoSugerido | None, nombre_de: Mapping[str, str]
+) -> Mensaje:
+    """El mensaje de una entrada de la agenda con un pedido ya calculado."""
+    texto = redactar_mensaje(
+        entrada.accion.tipo,
+        cliente,
+        entrada.perfil,
+        pedido,
+        [nombre_de[r.id_producto] for r in entrada.recomendaciones[:3]],
+    )
+    return Mensaje(cliente.id_cliente, cliente.nombre, cliente.telefono, entrada.accion.tipo, texto)

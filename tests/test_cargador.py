@@ -182,3 +182,16 @@ def test_cargar_todo_detecta_integridad(tmp_path):
     escribir(tmp_path, "ventas.csv", CABECERA_VENTAS + "v001,c001,p999,1,10,2026-09-01\n")
     with pytest.raises(ErrorDatos, match="inexistente"):
         cargar_todo(tmp_path)
+
+
+def test_productos_con_costo_y_stock_opcionales(tmp_path):
+    ruta = tmp_path / "productos.csv"
+    ruta.write_text(
+        "id_producto,nombre,categoria,precio,costo,stock\n"
+        "p001,Mouse,perifericos,45,30,12\n"
+        "p002,Hub,accesorios,60,,\n",
+        encoding="utf-8",
+    )
+    mouse, hub = cargar_productos(ruta)
+    assert (mouse.costo, mouse.stock) == (30.0, 12)
+    assert (hub.costo, hub.stock) == (None, None)

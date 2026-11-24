@@ -50,3 +50,33 @@ cubrir([Categoria|Resto], Max, Filtro, Acumulado, Productos, Total0, Total) :-
     Total1 is Total0 + Precio,
     Total1 =< Max,
     cubrir(Resto, Max, Filtro, [Id|Acumulado], Productos, Total1, Total).
+
+% Complementos: categorias que se usan juntas (la relacion vale en los dos sentidos).
+% A quien compro una tarjeta grafica le sirve memoria RAM o un monitor, no otra grafica.
+complementa(computo, perifericos).
+complementa(computo, monitores).
+complementa(computo, memoria_ram).
+complementa(computo, almacenamiento).
+complementa(computo, accesorios).
+complementa(computo, audio).
+complementa(computo, mobiliario).
+complementa(graficas, memoria_ram).
+complementa(graficas, monitores).
+complementa(monitores, perifericos).
+complementa(almacenamiento, memorias).
+
+complementarias(A, B) :- complementa(A, B).
+complementarias(A, B) :- complementa(B, A).
+
+% Categorias que el cliente ya compro ([] si ninguna).
+categorias_de(C, Categorias) :-
+    setof(Cat, P^Precio^( compro(C, P), producto(P, Cat, Precio) ), Categorias), !.
+categorias_de(_, []).
+
+% complemento(+Cliente, -Categoria, -Producto, -Centavos)
+%   Productos de categorias que complementan lo que compro y que aun no compra.
+complemento(C, Categoria, P, Centavos) :-
+    categorias_de(C, Suyas),
+    setof(Cat, A^( member(A, Suyas), complementarias(A, Cat), \+ memberchk(Cat, Suyas) ), Categorias),
+    member(Categoria, Categorias),
+    producto(P, Categoria, Centavos).

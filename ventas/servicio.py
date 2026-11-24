@@ -6,11 +6,12 @@ lógica de negocio se prueba sin necesidad de abrir Streamlit.
 """
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 
 from ventas.agenda import EntradaAgenda, construir_agenda
 from ventas.cargador import Datos
+from ventas.combos import Combo, Cotizacion, cotizar
 from ventas.funcional import (
     PerfilCliente,
     clasificar_cliente,
@@ -25,13 +26,17 @@ from ventas.funcional import (
 from ventas.mensajes import (
     Mensaje,
     MotorAsesor,
-    mensaje_propuesta,
-    mensajes_para_agenda,
+    mensaje_de_entrada,
+    mensaje_pedido,
 )
-from ventas.modelos import Cliente, ClienteFrecuente, Recomendacion
+from ventas.modelos import Cliente, ClienteFrecuente, Producto, Recomendacion
 from ventas.ofertas import Oferta, OfertaParaCliente, ofertas_para_cliente
-from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
-from ventas.propuestas import Propuesta
+from ventas.pedido import (
+    PedidoSugerido,
+    disponibles,
+    pedidos_para_cliente,
+    productos_comprados,
+)
 
 
 @dataclass(frozen=True)
@@ -45,7 +50,10 @@ class TarjetaAgenda:
     pedidos: tuple[PedidoSugerido, ...]
     mensaje: Mensaje
     ofertas: tuple[OfertaParaCliente, ...] = ()  # ofertas vigentes pensadas para este cliente
-    propuesta: Propuesta | None = None  # combo armado a mano: reemplaza al mensaje automático
+    pedido: Combo | None = None  # pedido abierto del cliente: su mensaje reemplaza al automático
+    cotizacion: Cotizacion | None = None  # cuánto sale ese pedido
+    complementos: tuple[Producto, ...] = ()  # de categorías que complementan lo que compró
+    limite_inactividad: int | None = None  # días sin comprar desde los que está inactivo (Prolog)
 
 
 @dataclass(frozen=True)
@@ -65,26 +73,32 @@ def construir_tarjetas(
     motor: MotorAsesor,
     max_pedidos: int = 3,
     vigentes: Mapping[str, Oferta] | None = None,
-    propuestas: Iterable[Propuesta] = (),
+    pedidos: Iterable[Combo] = (),
 ) -> tuple[TarjetaAgenda, ...]:
     """Agenda completa del día, lista para mostrar. Las ofertas vigentes se
     proponen a quien le corresponden y van primero en sus pedidos. Si el
-    vendedor guardó una propuesta para el cliente, su mensaje es el de esa propuesta.
+    cliente tiene un pedido abierto (borrador o enviado), el mensaje es el de ese
+    pedido (el más reciente) con la única regla de precio.
 
     Precondición: nadie más usa el motor mientras se ejecuta (SWI-Prolog es un
     único motor por proceso); la interfaz lo protege con un candado.
     """
-    agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, hoy, motor)
+    # Todas las recomendaciones de cada cliente se calculan una sola vez, en la agenda.
+    agenda = construir_agenda(
+        datos.clientes, datos.ventas, datos.productos, hoy, motor, max_recomendaciones=len(datos.productos)
+    )
     vigentes = dict(vigentes or {})
-    mensajes = mensajes_para_agenda(agenda, datos.clientes, datos.productos, motor, vigentes, datos.ventas)
     por_id = {c.id_cliente: c for c in datos.clientes}
-    guardadas = {p.id_cliente: p for p in propuestas}
+    abiertos = {
+        p.id_cliente: p for p in sorted(pedidos, key=lambda p: (p.fecha, p.id_combo)) if p.pendiente and p.registrado
+    }
     nombres = {p.id_producto: p.nombre for p in datos.productos}
+    producto_de = {p.id_producto: p for p in datos.productos}
 
     tarjetas = []
-    for entrada, mensaje in zip(agenda, mensajes, strict=True):
+    for entrada in agenda:
         cliente = clasificar_cliente(por_id[entrada.accion.id_cliente], entrada.perfil)
-        recomendaciones = motor.recomendar(cliente.id_cliente)
+        recomendaciones = entrada.recomendaciones
         comprados = productos_comprados(datos.ventas, cliente.id_cliente)
         pedidos = pedidos_para_cliente(
             cliente,
@@ -104,6 +118,11 @@ def construir_tarjetas(
             isinstance(cliente, ClienteFrecuente),
             comprados,
         )
+        limite = motor.limite_inactividad(cliente.id_cliente)
+        abierto = abiertos.get(cliente.id_cliente)
+        cotizacion = cotizar(abierto, datos.productos, vigentes, cliente) if abierto else None
+        motor.cargar_catalogo(disponibles(datos.productos))
+        complementos = tuple(producto_de[i] for i in motor.complementos(cliente.id_cliente))
         tarjetas.append(
             TarjetaAgenda(
                 entrada=entrada,
@@ -111,24 +130,23 @@ def construir_tarjetas(
                 recomendaciones=recomendaciones,
                 clientes_similares=_clientes_similares(recomendaciones),
                 pedidos=pedidos,
-                mensaje=_mensaje_de(mensaje, cliente, guardadas.get(cliente.id_cliente), nombres),
+                mensaje=_mensaje_de(
+                    mensaje_de_entrada(entrada, cliente, pedidos[0] if pedidos else None, nombres), cotizacion
+                ),
                 ofertas=ofertas,
-                propuesta=guardadas.get(cliente.id_cliente),
+                pedido=abierto,
+                cotizacion=cotizacion,
+                complementos=complementos,
+                limite_inactividad=limite,
             )
         )
     return tuple(tarjetas)
 
 
-def _mensaje_de(automatico: Mensaje, cliente: Cliente, propuesta: Propuesta | None, nombres) -> Mensaje:
-    if propuesta is None:
+def _mensaje_de(automatico: Mensaje, cotizacion: Cotizacion | None) -> Mensaje:
+    if cotizacion is None:
         return automatico
-    return Mensaje(
-        cliente.id_cliente,
-        cliente.nombre,
-        cliente.telefono,
-        automatico.tipo_accion,
-        mensaje_propuesta(cliente, propuesta, nombres),
-    )
+    return replace(automatico, texto=mensaje_pedido(automatico.nombre, cotizacion))
 
 
 def _clientes_similares(recomendaciones: tuple[Recomendacion, ...]) -> int:

@@ -1,3 +1,4 @@
+import math
 from collections import defaultdict
 from dataclasses import FrozenInstanceError
 from datetime import date, timedelta
@@ -43,12 +44,28 @@ def cargar(motor, datos, hoy=HOY, **umbrales):
     return motor
 
 
-def compras_sinteticas(cliente, ultimo_dia, n=3, producto="p001"):
-    """n compras en días distintos (cada 10 días), la última en `ultimo_dia`."""
+def compras_sinteticas(cliente, ultimo_dia, n=3, producto="p001", cada=10):
+    """n compras en días distintos (cada `cada` días), la última en `ultimo_dia`."""
     return [
-        Venta(f"v{cliente}{i}", cliente, producto, 1, 10.0, ultimo_dia - timedelta(days=10 * i))
+        Venta(f"v{cliente}{i}", cliente, producto, 1, 10.0, ultimo_dia - timedelta(days=cada * i))
         for i in range(n)
     ]
+
+
+def similares_de(compras, c):
+    """Comparten al menos 2 productos (o todos los del cliente, si tiene menos)."""
+    propios = compras[c]
+    if not propios:
+        return set()
+    minimo = min(2, len(propios))
+    return {o for o, otros in compras.items() if o != c and len(otros & propios) >= minimo}
+
+
+def limite_inactividad(p, dias):
+    """1,5 veces su intervalo propio (mínimo 15 días); sin intervalo, `dias`."""
+    if p.intervalo_promedio is None:
+        return dias
+    return max(15, math.ceil(1.5 * p.intervalo_promedio))
 
 
 def tipo_de(motor, cliente):
@@ -62,14 +79,13 @@ def oraculo_acciones(ps, ventas, umbral, dias):
         compras[v.id_cliente].add(v.id_producto)
 
     def tiene_recomendacion(c):
-        propios = compras[c]
-        similares = {o for o, otros in compras.items() if o != c and otros & propios}
-        return any(compras[o] - propios for o in similares)
+        return any(compras[o] - compras[c] for o in similares_de(compras, c))
 
     resultado = {}
     for p in ps:
-        if p.n_compras >= umbral:
-            resultado[p.id_cliente] = "reactivar" if p.dias_sin_comprar > dias else "fidelizar"
+        if p.compras_recientes >= umbral:
+            inactivo = p.dias_sin_comprar > limite_inactividad(p, dias)
+            resultado[p.id_cliente] = "reactivar" if inactivo else "fidelizar"
         elif p.n_compras >= 1 and tiene_recomendacion(p.id_cliente):
             resultado[p.id_cliente] = "cruzar"
     return resultado
@@ -83,12 +99,11 @@ def test_acciones_del_dataset_calculadas_a_mano(motor, datos):
     assert {(c, t) for c, t, _ in motor.acciones()} == {
         ("c001", "reactivar"),
         ("c007", "reactivar"),
+        ("c004", "reactivar"),  # compra cada ~16 días (límite 24) y lleva 25
         ("c002", "fidelizar"),
-        ("c004", "fidelizar"),
         ("c008", "fidelizar"),
         ("c003", "cruzar"),
-        ("c005", "cruzar"),
-    }
+    }  # c005 sale: nadie más compró p008, no tiene clientes similares
 
 
 def test_motivos_exactos(motor, datos):
@@ -120,13 +135,29 @@ def test_acciones_coinciden_con_el_oraculo(motor, datos, umbral, dias):
 
 
 # ---------- los límites exactos ----------
-@pytest.mark.parametrize(("dias_sin_comprar", "esperado"), [(29, "fidelizar"), (30, "fidelizar"),
-                                                              (31, "reactivar")])
-def test_limite_de_inactividad(motor, datos, dias_sin_comprar, esperado):
-    ventas = compras_sinteticas("c001", HOY - timedelta(days=dias_sin_comprar), n=3)
+@pytest.mark.parametrize(
+    ("cada", "dias_sin_comprar", "esperado"),
+    [
+        (10, 15, "fidelizar"),  # 1,5 × 10 = 15: el mínimo de 15 días
+        (10, 16, "reactivar"),
+        (30, 45, "fidelizar"),  # compra cada 30 días: inactivo pasados 45
+        (30, 46, "reactivar"),
+        (25, 38, "fidelizar"),  # 1,5 × 25 = 37,5 -> 38
+        (25, 39, "reactivar"),
+    ],
+)
+def test_inactivo_segun_su_propio_ritmo(motor, datos, cada, dias_sin_comprar, esperado):
+    ventas = compras_sinteticas("c001", HOY - timedelta(days=dias_sin_comprar), n=3, cada=cada)
     motor.cargar_compras(ventas)
     motor.cargar_perfiles([perfil_cliente("c001", ventas, datos.productos, HOY)])
     assert tipo_de(motor, "c001") == esperado
+
+
+def test_compras_viejas_no_lo_hacen_frecuente(motor, datos):
+    ventas = compras_sinteticas("c001", HOY - timedelta(days=170), n=3)  # la más vieja: hace 190 días
+    motor.cargar_compras(ventas)
+    motor.cargar_perfiles([perfil_cliente("c001", ventas, datos.productos, HOY)])
+    assert tipo_de(motor, "c001") != "reactivar" and tipo_de(motor, "c001") != "fidelizar"
 
 
 @pytest.mark.parametrize(("compras", "es_frecuente"), [(2, False), (3, True), (4, True)])
@@ -148,9 +179,9 @@ def test_umbrales_invalidos(motor, malo):
 
 def test_cargar_perfiles_reemplaza_los_anteriores(motor, datos):
     cargar(motor, datos, hoy=HOY)
-    assert tipo_de(motor, "c004") == "fidelizar"  # 25 días
-    cargar(motor, datos, hoy=date(2026, 10, 20))
-    assert tipo_de(motor, "c004") == "reactivar"  # 40 días
+    assert tipo_de(motor, "c002") == "fidelizar"  # 4 días; compra cada 15, límite 23
+    cargar(motor, datos, hoy=date(2026, 10, 30))
+    assert tipo_de(motor, "c002") == "reactivar"  # 29 días
 
 
 # =====================================================================
@@ -233,13 +264,12 @@ def test_mejor_por_cliente_se_queda_con_la_mas_urgente():
 def test_agenda_ordenada_calculada_a_mano(motor, datos):
     agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, HOY, motor)
     # Primero la acción más urgente; a igual urgencia, el que más gastó:
-    # reactivar: c001 (2650), c007 (1195) | fidelizar: c002 (3235), c004 (455),
-    # c008 (310) | cruzar: c003 (320), c005 (290)
-    assert [e.accion.id_cliente for e in agenda] == [
-        "c001", "c007", "c002", "c004", "c008", "c003", "c005",
-    ]
+    # reactivar: c001 (2650), c007 (1195), c004 (455; compra cada ~16 días y lleva 25)
+    # | fidelizar: c002 (3235), c008 (310) | cruzar: c003 (320).
+    # c005 sale: nadie más compró p008, así que no tiene clientes similares.
+    assert [e.accion.id_cliente for e in agenda] == ["c001", "c007", "c004", "c002", "c008", "c003"]
     assert [e.accion.tipo for e in agenda] == [
-        "reactivar", "reactivar", "fidelizar", "fidelizar", "fidelizar", "cruzar", "cruzar",
+        "reactivar", "reactivar", "reactivar", "fidelizar", "fidelizar", "cruzar",
     ]
 
 
@@ -280,11 +310,10 @@ def test_agenda_cambia_con_la_fecha_de_referencia(motor, datos):
     agenda = construir_agenda(
         datos.clientes, datos.ventas, datos.productos, date(2026, 10, 20), motor
     )
-    # c004 (última compra el 10-sep) pasa a inactivo; c002 y c008 siguen activos.
-    assert [e.accion.id_cliente for e in agenda] == [
-        "c001", "c007", "c004", "c002", "c008", "c003", "c005",
-    ]
-    assert {e.accion.id_cliente: e.accion.tipo for e in agenda}["c004"] == "reactivar"
+    # c008 compra cada 4 días (límite 15) y lleva 17: pasa a reactivar.
+    # c002 compra cada 15 (límite 23) y lleva 19: sigue activo.
+    assert [e.accion.id_cliente for e in agenda] == ["c001", "c007", "c004", "c008", "c002", "c003"]
+    assert {e.accion.id_cliente: e.accion.tipo for e in agenda}["c008"] == "reactivar"
 
 
 def test_agenda_sin_clientes(motor, datos):
@@ -304,7 +333,7 @@ def test_agenda_acepta_generadores(motor, datos):
     agenda = construir_agenda(
         iter(datos.clientes), iter(datos.ventas), iter(datos.productos), HOY, motor
     )
-    assert len(agenda) == 7
+    assert len(agenda) == 6
 
 
 def test_entrada_de_agenda_es_inmutable(motor, datos):
@@ -329,9 +358,20 @@ def test_agenda_depende_de_la_abstraccion_no_de_prolog(datos):
         def respaldo(self, id_cliente, id_producto):
             return ()
 
+        def limite_inactividad(self, id_cliente):
+            return 30
+
         def acciones(self):
             return (("c002", "fidelizar", ("frecuente", "reciente")),)
 
     agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, HOY, MotorFalso())
     assert [e.accion.id_cliente for e in agenda] == ["c002"]
     assert agenda[0].motivo == "Compró 5 veces, su última compra fue hace 4 días"
+
+
+def test_el_motor_informa_el_limite_de_inactividad_de_cada_cliente(motor, datos):
+    cargar(motor, datos)
+    assert motor.limite_inactividad("c001") == 28  # cada 18,5 días -> ceil(27,75)
+    assert motor.limite_inactividad("c008") == 15  # cada 4 días -> mínimo de 15
+    assert motor.limite_inactividad("c005") == 30  # una sola compra: el umbral general
+    assert motor.limite_inactividad("c999") == 30

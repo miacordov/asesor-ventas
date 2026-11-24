@@ -2,7 +2,8 @@
 
 Las reglas viven en prolog/reglas.pl, agenda.pl y pedido.pl; este módulo solo traduce:
     Venta (objetos)        ->  hechos compro/2
-    PerfilCliente (objeto) ->  hechos n_compras/2, dias_sin_comprar/2, umbral/2
+    PerfilCliente (objeto) ->  hechos n_compras/2, compras_recientes/2, intervalo_promedio/2,
+                               dias_sin_comprar/2, umbral/2
     Producto (objeto)      ->  hechos producto/3 (precio en centavos)
     soluciones Prolog      ->  objetos Recomendacion, acciones y pedidos
 """
@@ -21,7 +22,7 @@ RUTA_PROLOG = Path(__file__).resolve().parent.parent / "prolog"
 RUTA_REGLAS = RUTA_PROLOG / "reglas.pl"
 RUTA_AGENDA = RUTA_PROLOG / "agenda.pl"
 RUTA_PEDIDO = RUTA_PROLOG / "pedido.pl"
-DIAS_INACTIVIDAD = 30  # más de estos días sin comprar = cliente inactivo
+DIAS_INACTIVIDAD = 30  # inactivo, para quien no tiene un ritmo de compra propio (ver agenda.pl)
 MINIMO_PRODUCTOS = 2  # una combinación lleva al menos 2 productos (ver pedido.pl)
 
 
@@ -50,6 +51,11 @@ class MotorLogico(ABC):
         """Reemplaza los hechos de perfil y los umbrales de las reglas."""
 
     @abstractmethod
+    def limite_inactividad(self, id_cliente: str) -> int | None:
+        """Días sin comprar a partir de los cuales el cliente está inactivo
+        (None si no hay perfiles cargados)."""
+
+    @abstractmethod
     def acciones(self) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
         """(id_cliente, tipo, motivos) que el motor deduce, en orden estable."""
 
@@ -60,6 +66,11 @@ class MotorPedidos(ABC):
     @abstractmethod
     def cargar_catalogo(self, productos: Iterable[Producto]) -> None:
         """Reemplaza los productos disponibles para armar pedidos."""
+
+    @abstractmethod
+    def complementos(self, id_cliente: str) -> tuple[str, ...]:
+        """El producto más barato de cada categoría que complementa lo que el
+        cliente compró y que todavía no compra, ordenados por categoría."""
 
     @abstractmethod
     def armar_pedidos(
@@ -143,15 +154,24 @@ class PuenteProlog(MotorLogico, MotorPedidos):
         for nombre, valor in (("umbral_frecuente", umbral_frecuente), ("dias_inactividad", dias_inactividad)):
             if isinstance(valor, bool) or not isinstance(valor, int) or valor < 0:
                 raise ValueError(f"{nombre} debe ser un entero >= 0, recibido: {valor!r}")
-        for hecho in ("umbral(_, _)", "n_compras(_, _)", "dias_sin_comprar(_, _)"):
+        for hecho in ("umbral(_, _)", "n_compras(_, _)", "compras_recientes(_, _)", "intervalo_promedio(_, _)",
+                      "dias_sin_comprar(_, _)"):
             list(self._prolog.query(f"retractall({hecho})"))
         self._prolog.assertz(f"umbral(frecuente, {umbral_frecuente})")
         self._prolog.assertz(f"umbral(inactividad, {dias_inactividad})")
         for perfil in perfiles:
             _validar_id(perfil.id_cliente, "id_cliente")
-            self._prolog.assertz(f"n_compras({perfil.id_cliente}, {perfil.n_compras})")
+            self._prolog.assertz(f"n_compras({perfil.id_cliente}, {int(perfil.n_compras)})")
+            self._prolog.assertz(f"compras_recientes({perfil.id_cliente}, {int(perfil.compras_recientes)})")
+            if perfil.intervalo_promedio is not None:
+                self._prolog.assertz(f"intervalo_promedio({perfil.id_cliente}, {float(perfil.intervalo_promedio)!r})")
             if perfil.dias_sin_comprar is not None:
                 self._prolog.assertz(f"dias_sin_comprar({perfil.id_cliente}, {perfil.dias_sin_comprar})")
+
+    def limite_inactividad(self, id_cliente: str) -> int | None:
+        _validar_id(id_cliente, "id_cliente")
+        resultado = list(self._prolog.query(f"limite_inactividad({id_cliente}, L)"))
+        return int(resultado[0]["L"]) if resultado else None
 
     def acciones(self) -> tuple[tuple[str, str, tuple[str, ...]], ...]:
         soluciones = self._prolog.query("accion(C, T, M)")
@@ -164,6 +184,15 @@ class PuenteProlog(MotorLogico, MotorPedidos):
             self._prolog.assertz(
                 f"producto({p.id_producto}, {p.categoria}, {_a_centavos(p.precio)})"
             )
+
+    def complementos(self, id_cliente: str) -> tuple[str, ...]:
+        _validar_id(id_cliente, "id_cliente")
+        mas_barato: dict[str, tuple[int, str]] = {}
+        for s in self._prolog.query(f"complemento({id_cliente}, Cat, P, Centavos)"):
+            candidato = (int(s["Centavos"]), str(s["P"]))
+            categoria = str(s["Cat"])
+            mas_barato[categoria] = min(mas_barato.get(categoria, candidato), candidato)
+        return tuple(mas_barato[c][1] for c in sorted(mas_barato))
 
     def armar_pedidos(
         self,

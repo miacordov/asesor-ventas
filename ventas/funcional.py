@@ -15,7 +15,8 @@ from functools import partial, reduce
 
 from ventas.modelos import Cliente, ClienteFrecuente, ClienteRegular, Producto, Venta
 
-UMBRAL_FRECUENTE = 3  # compras (días distintos) para ser cliente frecuente
+UMBRAL_FRECUENTE = 3  # compras (días distintos) recientes para ser cliente frecuente
+VENTANA_FRECUENCIA = 180  # solo cuentan las compras de estos últimos días para ser frecuente
 
 Predicado = Callable[[Venta], bool]
 
@@ -125,6 +126,12 @@ class PerfilCliente:
     total_gastado: float
     ticket_promedio: float  # gasto medio por día de compra
     categorias_habituales: tuple[str, ...]  # de la más a la menos frecuente
+    compras_recientes: int | None = None  # días de compra en la ventana; None = todas
+    intervalo_promedio: float | None = None  # días medios entre compras; None con menos de 2
+
+    def __post_init__(self) -> None:
+        if self.compras_recientes is None:
+            object.__setattr__(self, "compras_recientes", self.n_compras)
 
 
 def _categorias_habituales(
@@ -152,6 +159,8 @@ def perfil_cliente(
 
     categoria_de = {p.id_producto: p.categoria for p in productos}
     total = total_ventas(propias)
+    primera = min(dias_de_compra)
+    intervalo = (ultima - primera).days / (len(dias_de_compra) - 1) if len(dias_de_compra) > 1 else None
     return PerfilCliente(
         id_cliente=id_cliente,
         n_compras=len(dias_de_compra),
@@ -160,6 +169,8 @@ def perfil_cliente(
         total_gastado=total,
         ticket_promedio=round(total / len(dias_de_compra), 2),
         categorias_habituales=_categorias_habituales(propias, categoria_de),
+        compras_recientes=sum((hoy - dia).days <= VENTANA_FRECUENCIA for dia in dias_de_compra),
+        intervalo_promedio=None if intervalo is None else round(intervalo, 2),
     )
 
 
@@ -178,7 +189,7 @@ def clasificar_cliente(
 ) -> Cliente:
     if perfil.id_cliente != cliente.id_cliente:
         raise ValueError(f"El perfil {perfil.id_cliente} no corresponde al cliente {cliente.id_cliente}.")
-    clase = ClienteFrecuente if perfil.n_compras >= umbral else ClienteRegular
+    clase = ClienteFrecuente if perfil.compras_recientes >= umbral else ClienteRegular
     return clase(cliente.id_cliente, cliente.nombre, cliente.telefono)
 
 

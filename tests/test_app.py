@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pandas as pd
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -21,12 +22,13 @@ from streamlit.testing.v1 import AppTest
 RAIZ = Path(__file__).resolve().parent.parent
 APP = str(RAIZ / "app.py")
 TIEMPO = 60
-PAGINAS = ["agenda", "pedido", "ofertas", "propuesta", "resumen", "clientes", "productos", "registro_ventas"]
+PAGINAS = ["agenda", "pedido", "ofertas", "resumen", "clientes", "productos", "registro_ventas"]
 
 
 @pytest.fixture(autouse=True)
 def entorno_limpio(monkeypatch):
     monkeypatch.setenv("ASESOR_DB", ":memory:")
+    monkeypatch.setenv("ASESOR_FECHA", "2026-10-05")  # fecha fija: los valores esperados dependen de ella
     # Datos fijos de prueba: los valores esperados se calcularon a mano sobre ellos.
     monkeypatch.setattr("interfaz.comun.CARPETA_CSV", RAIZ / "tests" / "datos")
     st.cache_resource.clear()
@@ -109,12 +111,30 @@ def test_navegar_muchas_veces_no_falla():
     for pagina in ("pedido", "agenda", "resumen", "agenda", "clientes", "registro_ventas", "agenda"):
         at.switch_page(f"paginas/{pagina}.py").run()
         assert ok(at), pagina
-    assert len(tarjetas(at)) == 7
+    assert len(tarjetas(at)) == 6
 
 
-def test_la_fecha_de_referencia_por_defecto_es_la_de_la_demostracion():
+def test_la_fecha_de_referencia_se_puede_fijar_con_asesor_fecha():
     at = abrir()
     assert at.sidebar.date_input[0].value == date(2026, 10, 5)
+
+
+def test_sin_asesor_fecha_la_referencia_es_hoy(monkeypatch):
+    monkeypatch.delenv("ASESOR_FECHA")
+    at = abrir()
+    assert at.sidebar.date_input[0].value == date.today()
+
+
+def test_asesor_fecha_invalida_usa_hoy(monkeypatch):
+    monkeypatch.setenv("ASESOR_FECHA", "mañana")
+    assert abrir().sidebar.date_input[0].value == date.today()
+
+
+def test_el_servidor_solo_escucha_en_esta_computadora():
+    import tomllib
+
+    config = tomllib.loads((RAIZ / ".streamlit" / "config.toml").read_text(encoding="utf-8"))
+    assert config["server"]["address"] == "localhost"
 
 
 def test_datos_de_ejemplo_invalidos_muestran_un_mensaje_claro(tmp_path, monkeypatch):
@@ -146,26 +166,54 @@ def test_los_datos_persisten_al_reiniciar_la_aplicacion(tmp_path, monkeypatch):
 # =====================================================================
 # Agenda
 # =====================================================================
-def test_agenda_muestra_los_siete_contactos_en_orden():
+def test_agenda_muestra_los_seis_contactos_en_orden():
+    # Ana pasa a reactivar (compra cada ~16 días y lleva 25); Luis no tiene clientes similares.
     assert tarjetas(abrir()) == [
         "1. Juan Pérez",
         "2. Pedro Salas",
-        "3. María Torres",
-        "4. Ana Ríos",
+        "3. Ana Ríos",
+        "4. María Torres",
         "5. Lucía Mendoza",
         "6. Carlos Ruiz",
-        "7. Luis Vega",
     ]
 
 
 def test_agenda_indicadores_calculados_a_mano():
     assert indicadores(abrir()) == {
-        "Contactos": "7",
-        "Por reactivar": "2",
-        "Por fidelizar": "3",
-        "Complementar": "2",
-        "Valor en pedidos sugeridos": "S/ 1,476.00",  # 607.50+261+382.50+225 (Ana, Lucía y Carlos sin combinación)
+        "Contactos": "6",
+        "Por reactivar": "3",
+        "Por fidelizar": "2",
+        "Complementar": "1",
+        "Conversión (15 días)": "—",  # todavía no se registró ningún contacto
     }
+
+
+def registrar_contacto(at: AppTest, id_cliente: str, resultado: str, dias: int | None = None) -> AppTest:
+    at.radio(key=f"resultado_{id_cliente}").set_value(resultado).run()
+    if dias is not None:
+        at.number_input(key=f"dias_{id_cliente}_{resultado}").set_value(dias).run()
+    return at.button(key=f"guardar_contacto_{id_cliente}").click().run()
+
+
+def test_registrar_un_contacto_lo_saca_de_la_agenda_hasta_volver():
+    at = registrar_contacto(abrir(), "c001", "no_responde")  # vuelve en 7 días
+    assert ok(at) and "Contacto con Juan Pérez registrado: No responde. Vuelve a la agenda el 12/10/2026." in exito(at)
+    assert "1. Juan Pérez" not in tarjetas(at) and len(tarjetas(at)) == 5
+    assert indicadores(at)["Contactos"] == "5"
+    at.toggle(key="ver_pospuestos").set_value(True).run()
+    assert "Juan Pérez" in " ".join(tarjetas(at))
+    assert any("Último contacto: 05/10/2026 · No responde · vuelve el 12/10/2026" in c.value for c in at.caption)
+
+
+def test_con_cero_dias_el_cliente_sigue_en_la_agenda_con_su_ultimo_contacto():
+    at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
+    assert "1. Juan Pérez" in tarjetas(at)
+    assert any("Último contacto: 05/10/2026 · Interesado" in c.value for c in at.caption)
+
+
+def test_la_conversion_cuenta_los_contactos_registrados():
+    at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
+    assert indicadores(at)["Conversión (15 días)"] == "0 %"
 
 
 def test_agenda_no_incluye_a_rosa_sin_compras():
@@ -174,7 +222,7 @@ def test_agenda_no_incluye_a_rosa_sin_compras():
 
 def test_cada_tarjeta_tiene_su_boton_de_whatsapp_con_el_mensaje():
     botones = abrir().get("link_button")
-    assert len(botones) == 7
+    assert len(botones) == 6
     for b in botones:
         url = urlparse(b.proto.url)
         assert url.netloc == "wa.me" and url.path[1:].isdigit()
@@ -186,30 +234,31 @@ def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
     at = abrir()
     assert "Compró 3 veces, lleva 40 días sin comprar" in [m.value for m in at.markdown]
     assert ("S/ 675.00", "S/ 607.50") in totales(at)  # Juan: precio tachado y total con descuento
-    assert ("", "S/ 225.00") in totales(at)  # Luis es regular: sin descuento
+    assert ("S/ 645.00", "S/ 580.50") in totales(at)  # María: p006 + p007 + p010
     assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
 def test_cada_tarjeta_tiene_porque_y_mensaje():
     etiquetas = [p.proto.popover.label for p in abrir().get("popover")]
-    assert etiquetas.count("¿Por qué?") == 7 and etiquetas.count("Mensaje") == 7
+    assert etiquetas.count("¿Por qué?") == 6 and etiquetas.count("Mensaje") == 6
 
 
 def test_filtrar_la_agenda_por_tipo_de_accion():
     at = abrir()
     at.get("button_group")[0].set_value("Reactivar").run()
     assert ok(at)
-    assert tarjetas(at) == ["1. Juan Pérez", "2. Pedro Salas"]
+    assert tarjetas(at) == ["1. Juan Pérez", "2. Pedro Salas", "3. Ana Ríos"]
     at.get("button_group")[0].set_value("Complementar").run()
-    assert tarjetas(at) == ["6. Carlos Ruiz", "7. Luis Vega"]  # conservan su posición en la agenda
+    assert tarjetas(at) == ["6. Carlos Ruiz"]  # conserva su posición en la agenda
 
 
 def test_la_agenda_cambia_con_la_fecha_de_referencia():
     at = abrir()
     at.sidebar.date_input[0].set_value(date(2026, 10, 20)).run()
     assert ok(at)
-    assert indicadores(at)["Por reactivar"] == "3"  # Ana (última compra el 10-sep) ya está inactiva
-    assert "3. Ana Ríos" in tarjetas(at)
+    # Lucía compra cada 4 días (límite 15) y lleva 17 sin venir: se suma a reactivar.
+    assert indicadores(at)["Por reactivar"] == "4"
+    assert "4. Lucía Mendoza" in tarjetas(at)
 
 
 @pytest.mark.parametrize("pagina", ["agenda", "clientes", "registro_ventas"])
@@ -335,11 +384,12 @@ def test_guardar_combinacion_la_lleva_a_ventas_con_su_id():
     assert ok(at)
     assert "Combinación cb001 guardada para Juan Pérez." in exito(at)[0]
     at.switch_page("paginas/registro_ventas.py").run()
-    assert any(t.label == "Combos por registrar (1)" for t in at.tabs)
-    titulos = [m.value for m in at.markdown if m.value.startswith("**Combo ")]
-    assert titulos == ["**Combo cb001 · Juan Pérez** · guardado el 05/10/2026"]
+    assert any(t.label == "Pedidos abiertos (1)" for t in at.tabs)
+    titulos = [m.value for m in at.markdown if m.value.startswith("**Pedido ")]
+    assert titulos == ["**Pedido cb001 · Juan Pérez** · Borrador · guardado el 05/10/2026"]
     html = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
     assert filas_de_producto(html) == [("Webcam HD", "S/ 110.00"), ("Mochila para laptop", "S/ 85.00")]
+    assert ("S/ 195.00", "S/ 175.50") in totales(at)  # Juan es frecuente: su 10 %
 
 
 def test_el_combo_muestra_la_oferta_mientras_esta_vigente_y_se_vende_con_ella():
@@ -349,17 +399,17 @@ def test_el_combo_muestra_la_oferta_mientras_esta_vigente_y_se_vende_con_ella():
     at.switch_page("paginas/registro_ventas.py").run()
     html = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
     assert "Oferta -50 % hasta el 31/10/2026 · antes S/ 45.00" in html
-    assert ("S/ 130.00", "S/ 107.50") in totales(at)
+    assert ("S/ 107.50", "S/ 96.75") in totales(at)  # 22,50 + 85 con el 10 % de Juan
 
     at.button(key="registrar_combo_cb001").click().run()
     assert ok(at)
-    assert exito(at)[0].startswith("Combo cb001 registrado para Juan Pérez por S/ 107.50: ventas v031, v032.")
-    assert any(t.label == "Combos por registrar (0)" for t in at.tabs)
+    assert exito(at)[0].startswith("Pedido cb001 registrado para Juan Pérez por S/ 96.75: ventas v031, v032.")
+    assert any(t.label == "Pedidos abiertos (0)" for t in at.tabs)
     t = tabla(at)
     registradas = t[t["combo"] == "cb001"]
     assert sorted(zip(registradas["producto"], registradas["precio_unitario"])) == [
-        ("Mochila para laptop", 85.0),
-        ("Mouse inalámbrico", 22.5),
+        ("Mochila para laptop", 76.5),
+        ("Mouse inalámbrico", 20.25),
     ]
 
 
@@ -367,8 +417,8 @@ def test_descartar_un_combo_pendiente():
     at = guardar_combinacion()
     at.switch_page("paginas/registro_ventas.py").run()
     at.button(key="descartar_combo_cb001").click().run()
-    assert ok(at) and "Combo cb001 descartado." in exito(at)
-    assert any("No hay combos por registrar" in i.value for i in at.info)
+    assert ok(at) and "Pedido cb001 descartado." in exito(at)
+    assert any("No hay pedidos abiertos" in i.value for i in at.info)
 
 
 def test_combo_para_un_cliente_no_registrado():
@@ -380,7 +430,7 @@ def test_combo_para_un_cliente_no_registrado():
     assert ok(at) and "Combinación cb001 guardada para Pedro Gómez (no registrado)." in exito(at)[0]
 
     at.switch_page("paginas/registro_ventas.py").run()
-    assert "**Combo cb001 · Pedro Gómez (no registrado)** · guardado el 05/10/2026" in [m.value for m in at.markdown]
+    assert "**Pedido cb001 · Pedro Gómez (no registrado)** · Borrador · guardado el 05/10/2026" in [m.value for m in at.markdown]
     at.button(key="registrar_combo_cb001").click().run()
     assert ok(at)
     assert "Cliente nuevo registrado: Pedro Gómez (c009)." in exito(at)[0]
@@ -447,64 +497,60 @@ def test_quitar_una_oferta():
 
 
 # =====================================================================
-# Asesoría: propuesta personalizada
+# Asesoría: el pedido de la agenda
 # =====================================================================
-def armar_propuesta_para(at: AppTest, id_cliente: str, productos: list[str], descuento: int) -> AppTest:
-    at.selectbox(key="propuesta_cliente").set_value(id_cliente).run()
-    at.multiselect(key=f"pp_{id_cliente}_0_productos").set_value(productos).run()
-    at.number_input(key=f"pp_{id_cliente}_0_descuento").set_value(descuento).run()
-    return at
+MENSAJE_PEDIDO_JUAN = (
+    "Hola Juan, te preparamos un pedido especial: Monitor 24 pulgadas, Auriculares con micrófono y Hub USB-C "
+    "por S/ 675.00, y con tu 10 % de descuento te queda en S/ 607.50. ¡Escríbenos si te interesa!"
+)
 
 
-def test_personalizar_desde_la_agenda_abre_la_propuesta_del_cliente():
+def enlaces_whatsapp(at: AppTest) -> list[str]:
+    return [parse_qs(urlparse(b.proto.url).query)["text"][0] for b in at.get("link_button")]
+
+
+def test_la_pagina_de_propuesta_personalizada_ya_no_existe():
+    assert not (RAIZ / "paginas" / "propuesta.py").exists()
+    assert "Propuesta personalizada" not in (RAIZ / "app.py").read_text(encoding="utf-8")
+
+
+def test_personalizar_abre_arma_mi_pedido_con_el_cliente_elegido():
     at = abrir()
     at.button(key="personalizar_c001").click().run()
-    assert ok(at) and banner(at) == "Propuesta personalizada"
-    assert at.selectbox(key="propuesta_cliente").value == "c001"
+    assert ok(at) and banner(at) == "Arma mi pedido"
+    assert at.selectbox(key="combo_cliente").value == "c001"
 
 
-def test_la_propuesta_sugiere_el_descuento_del_cliente_frecuente():
-    at = abrir("propuesta")
-    at.selectbox(key="propuesta_cliente").set_value("c001").run()  # Juan es frecuente
-    assert at.number_input(key="pp_c001_0_descuento").value == 10
+def test_guardar_el_pedido_sugerido_desde_la_agenda():
+    at = abrir()
+    at.button(key="guardar_sugerido_c001").click().run()
+    assert ok(at) and "Pedido cb001 guardado para Juan Pérez." in exito(at)
+    assert "Pedido en borrador" in " ".join(m.value for m in at.markdown)
+    assert MENSAJE_PEDIDO_JUAN in enlaces_whatsapp(at)
+    assert not [b for b in at.button if b.key == "guardar_sugerido_c001"]  # ya tiene un pedido abierto
 
 
-def test_guardar_una_propuesta_la_lleva_a_la_agenda():
-    abrir("propuesta")
-    ofertar("p005", 20)  # auriculares: 95 -> 76
-    at = armar_propuesta_para(abrir("propuesta"), "c001", ["p005", "p009"], 5)
-    boton(at, "Guardar en la agenda").click().run()
-    assert ok(at) and "Propuesta para Juan Pérez guardada en la agenda." in exito(at)
-    esperado = (
-        "Hola Juan, te preparamos una propuesta especial: Auriculares con micrófono (en oferta) y Hub USB-C "
-        "por S/ 136.00, y con tu 5 % de descuento te queda en S/ 129.20. ¡Escríbenos si te interesa!"
-    )
-    enlaces = [parse_qs(urlparse(b.proto.url).query)["text"][0] for b in at.get("link_button")]
-    assert esperado in enlaces  # en la lista de propuestas guardadas
-
+def test_ajustar_el_descuento_y_enviar_el_pedido_desde_ventas():
+    at = guardar_combinacion()  # Juan: Webcam HD + Mochila = 195
+    at.switch_page("paginas/registro_ventas.py").run()
+    at.number_input(key="descuento_cb001").set_value(15).run()
+    assert ok(at) and ("S/ 195.00", "S/ 165.75") in totales(at)
+    at.button(key="enviar_combo_cb001").click().run()
+    assert ok(at) and "Pedido cb001 enviado a Juan Pérez: sus precios quedan fijos." in exito(at)
+    assert "**Pedido cb001 · Juan Pérez** · Enviado · guardado el 05/10/2026" in [m.value for m in at.markdown]
+    assert not [n for n in at.number_input if n.key == "descuento_cb001"]  # el precio ya no se cambia
+    assert any("por S/ 195.00, y con tu 15 % de descuento te queda en S/ 165.75" in t for t in enlaces_whatsapp(at))
     at.switch_page("paginas/agenda.py").run()
-    html = " ".join(m.value for m in at.markdown)
-    assert "Propuesta lista para enviar" in html and "Propuesta guardada el 05/10/2026" in html
-    assert ("", "S/ 136.00") not in totales(at) and ("S/ 136.00", "S/ 129.20") in totales(at)
-    enlaces = [parse_qs(urlparse(b.proto.url).query)["text"][0] for b in at.get("link_button")]
-    assert esperado in enlaces
+    assert "1. Juan Pérez" not in tarjetas(at)  # se le envió una propuesta: vuelve en 3 días
+    at.toggle(key="ver_pospuestos").set_value(True).run()
+    assert any("Último contacto: 05/10/2026 · Propuesta enviada · vuelve el 08/10/2026" in c.value for c in at.caption)
 
 
-def test_un_solo_producto_no_se_puede_guardar():
-    at = abrir("propuesta")
-    at.selectbox(key="propuesta_cliente").set_value("c001").run()
-    at.multiselect(key="pp_c001_0_productos").set_value(["p005"]).run()
-    assert ok(at)
-    assert not [b for b in at.button if b.label == "Guardar en la agenda"]
-    assert any("al menos 2 productos" in c.value for c in at.caption)
-
-
-def test_quitar_una_propuesta_guardada():
-    at = armar_propuesta_para(abrir("propuesta"), "c001", ["p005", "p009"], 0)
-    boton(at, "Guardar en la agenda").click().run()
-    boton(at, "Quitar").click().run()
-    assert ok(at) and "Propuesta de Juan Pérez quitada de la agenda." in exito(at)
-    assert any("Todavía no guardaste propuestas" in i.value for i in at.info)
+def test_sin_descuento_manual_se_aplica_el_del_cliente():
+    at = guardar_combinacion("c003")  # Carlos es regular
+    at.switch_page("paginas/registro_ventas.py").run()
+    assert at.number_input(key="descuento_cb001").value is None
+    assert any("Sin descuento manual se aplica el del cliente: 0 %." in c.value for c in at.caption)
 
 
 # =====================================================================
@@ -734,8 +780,8 @@ def test_la_venta_registrada_cambia_la_agenda():
     boton(at, "Registrar venta").click().run()
     at.switch_page("paginas/agenda.py").run()
     assert ok(at)
-    assert (indicadores(at)["Por reactivar"], indicadores(at)["Por fidelizar"]) == ("1", "4")
-    assert tarjetas(at)[:2] == ["1. Pedro Salas", "2. Juan Pérez"]
+    assert (indicadores(at)["Por reactivar"], indicadores(at)["Por fidelizar"]) == ("2", "3")
+    assert tarjetas(at)[:3] == ["1. Pedro Salas", "2. Ana Ríos", "3. Juan Pérez"]
 
 
 def test_el_total_de_la_venta_se_calcula_al_cambiar_la_cantidad():
@@ -803,7 +849,6 @@ def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
         ("agenda", "Asesoría", "Agenda de fidelización"),
         ("pedido", "Asesoría · modo mostrador", "Arma mi pedido"),
         ("ofertas", "Asesoría", "Ofertas de temporada"),
-        ("propuesta", "Asesoría", "Propuesta personalizada"),
         ("resumen", "Administración", "Resumen del negocio"),
         ("clientes", "Administración", "Clientes"),
         ("productos", "Administración", "Productos"),
@@ -848,3 +893,112 @@ def test_un_producto_con_simbolos_no_rompe_el_diseno():
     filas = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
     assert "Mouse &lt;Pro&gt; &amp; Cía" in filas
     assert "<Pro>" not in filas
+
+
+def test_la_tarjeta_sugiere_complementos_de_lo_que_compro():
+    textos = [m.value for m in abrir().markdown]
+    assert (
+        "**Complementa lo que compró:** Disco externo 1TB (S/ 230.00), Auriculares con micrófono (S/ 95.00), "
+        "Silla ergonómica (S/ 450.00) y Monitor 24 pulgadas (S/ 520.00)"
+    ) in textos
+
+
+def test_el_por_que_explica_el_ritmo_propio_del_cliente():
+    captions = [c.value for c in abrir().caption]
+    assert (
+        "Frecuente: 3 compras o más en los últimos 180 días (lleva 3). "
+        "Compra cada 18.5 días en promedio: se considera inactivo pasados 28 días sin comprar."
+    ) in captions
+
+
+# ---------------------------------------------------------------------
+# Costo y stock
+# ---------------------------------------------------------------------
+def test_registrar_un_producto_con_costo_y_stock():
+    at = abrir("productos")
+    at.text_input(key="np_0_nombre").set_value("Cable HDMI").run()
+    at.selectbox(key="np_0_cat").select("accesorios").run()
+    at.number_input(key="np_0_precio").set_value(25.0).run()
+    at.number_input(key="np_0_costo").set_value(15.0).run()
+    at.number_input(key="np_0_stock").set_value(8).run()
+    boton(at, "Registrar producto").click().run()
+    assert ok(at)
+    nuevo = tabla(at)[tabla(at)["Producto"] == "Cable HDMI"].iloc[0]
+    assert (nuevo["Costo"], nuevo["Margen"], nuevo["Stock"]) == (15.0, 10.0, "8")
+
+
+def test_sin_costo_ni_stock_el_catalogo_lo_indica():
+    laptop = tabla(abrir("productos")).iloc[0]
+    assert pd.isna(laptop["Costo"]) and pd.isna(laptop["Margen"]) and laptop["Stock"] == "Sin control"
+
+
+def test_un_producto_agotado_se_marca_y_no_se_puede_vender():
+    at = abrir("productos")
+    at.selectbox(key="editar_producto_sel").select("p002").run()
+    at.number_input(key="ep_p002_0_stock").set_value(1).run()
+    boton(at, "Guardar cambios").click().run()
+    assert ok(at)
+    at.switch_page("paginas/registro_ventas.py").run()
+    at.selectbox(key="venta_producto_0").select("p002").run()
+    at.number_input(key="venta_cantidad_0").set_value(2).run()
+    boton(at, "Registrar venta").click().run()
+    assert "No hay stock suficiente de Mouse inalámbrico: queda 1." in errores(at)
+    at.number_input(key="venta_cantidad_0").set_value(1).run()
+    boton(at, "Registrar venta").click().run()
+    assert ok(at)
+    at.switch_page("paginas/productos.py").run()
+    assert tabla(at)[tabla(at)["Producto"] == "Mouse inalámbrico"].iloc[0]["Stock"] == "Agotado"
+
+
+def test_el_formulario_de_venta_muestra_el_stock():
+    at = abrir("productos")
+    at.selectbox(key="editar_producto_sel").select("p002").run()
+    at.number_input(key="ep_p002_0_stock").set_value(3).run()
+    boton(at, "Guardar cambios").click().run()
+    at.switch_page("paginas/registro_ventas.py").run()
+    opciones = at.selectbox(key="venta_producto_0").options
+    assert "Mouse inalámbrico · S/ 45.00 · quedan 3" in opciones
+    assert "Laptop 14 pulgadas · S/ 2,400.00" in opciones
+
+
+def cargar_costo_stock(id_producto, costo=None, stock=None):
+    from interfaz import comun
+    from ventas import administracion as admin
+
+    p = next(p for p in comun.repositorio().cargar_todo().productos if p.id_producto == id_producto)
+    admin.editar_producto(comun.repositorio(), id_producto, p.nombre, p.categoria, p.precio, costo=costo, stock=stock)
+
+
+def test_ofertas_muestran_stock_y_margen():
+    abrir("ofertas")
+    cargar_costo_stock("p002", costo=30.0, stock=12)
+    t = tabla(abrir("ofertas"))
+    mouse = t[t["Producto"] == "Mouse inalámbrico"].iloc[0]
+    assert (mouse["Stock"], mouse["Margen"]) == ("12", 15.0)
+    assert t[t["Producto"] == "Laptop 14 pulgadas"].iloc[0]["Stock"] == "Sin control"
+
+
+def test_avisa_si_la_oferta_queda_por_debajo_del_costo():
+    abrir("ofertas")
+    cargar_costo_stock("p002", costo=40.0)
+    at = abrir("ofertas")
+    at.selectbox(key="of_0_producto").set_value("p002").run()
+    at.number_input(key="of_0_porcentaje").set_value(20).run()  # 45 -> 36
+    assert "Con 20 % vendes a S/ 36.00, por debajo del costo (S/ 40.00): pierdes S/ 4.00 por unidad." in [
+        w.value for w in at.warning
+    ]
+    at.number_input(key="of_0_porcentaje").set_value(10).run()  # 40,50: todavía gana
+    assert not at.warning
+
+
+def test_el_mostrador_ordena_por_margen():
+    abrir("pedido")
+    cargar_costo_stock("p007", costo=80.0)  # mochila: deja 5
+    cargar_costo_stock("p009", costo=20.0)  # hub: deja 40
+    cargar_costo_stock("p005", costo=50.0)  # auriculares: dejan 45
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value(["accesorios", "audio"]).run()
+    at.segmented_control(key="orden_combinaciones").set_value("margen").run()
+    assert ok(at)
+    textos = " ".join(m.value for m in at.markdown)
+    assert textos.index("Margen: S/ 85.00") < textos.index("Margen: S/ 50.00")

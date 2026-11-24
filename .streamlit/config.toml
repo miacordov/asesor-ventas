@@ -1,5 +1,7 @@
 [server]
 enableStaticServing = true
+# Solo esta computadora: la aplicación tiene datos de clientes y no pide contraseña.
+address = "localhost"
 
 [browser]
 gatherUsageStats = false

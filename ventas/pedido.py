@@ -20,6 +20,7 @@ from ventas.modelos import Cliente, ClienteFrecuente, Producto, Recomendacion, V
 from ventas.ofertas import Oferta, aplicar_ofertas, ofertas_para_cliente
 
 MAX_CATEGORIAS = 3  # un pedido sugerido combina como máximo 3 categorías
+ORDENES_MOSTRADOR = {"presupuesto": "Aprovechar el presupuesto", "margen": "Mayor margen"}
 MAX_COMBINACIONES_MOSTRADOR = 5000  # se revisan todas para ordenar bien (ofertas y aprovechamiento)
 
 
@@ -41,6 +42,14 @@ class Pedido:
     @property
     def subtotal(self) -> float:
         return round(sum(p.precio for p in self.productos), 2)
+
+    @property
+    def margen(self) -> float | None:
+        """Ganancia del pedido a sus precios (con oferta, si la hay); None si
+        falta el costo de algún producto."""
+        if any(p.costo is None for p in self.productos):
+            return None
+        return round(sum(p.precio - p.costo for p in self.productos), 2)
 
     def total_para(self, cliente: Cliente) -> float:
         """Total con el descuento propio del tipo de cliente (polimorfismo)."""
@@ -103,6 +112,11 @@ def categorias_para_combinar(categorias: Iterable[str]) -> tuple[str, ...]:
     return categorias * MINIMO_PRODUCTOS if len(categorias) == 1 else categorias
 
 
+def disponibles(productos: Iterable[Producto]) -> tuple[Producto, ...]:
+    """Los que se pueden ofrecer: con stock, o sin control de stock."""
+    return tuple(p for p in productos if p.stock is None or p.stock > 0)
+
+
 def productos_comprados(ventas: Iterable[Venta], id_cliente: str) -> frozenset[str]:
     """Los productos que el cliente ya compró alguna vez."""
     return frozenset(v.id_producto for v in ventas if v.id_cliente == id_cliente)
@@ -139,7 +153,8 @@ def pedidos_para_cliente(
     Precondición: el motor ya tiene las compras cargadas (para no repetirle lo
     que ya compró). construir_agenda() lo hace.
     """
-    productos = tuple(productos)
+    catalogo = tuple(productos)  # completo: las categorías de lo recomendado
+    productos = disponibles(catalogo)  # sin agotados: con estos se arma
     vigentes = dict(vigentes or {})
     if perfil.n_compras == 0:
         return ()
@@ -151,7 +166,7 @@ def pedidos_para_cliente(
     productos = aplicar_ofertas(productos, vigentes)
     presupuesto = presupuesto_sugerido(perfil, margen)
     candidatas = tuple(o.producto.categoria for o in relevantes) + categorias_de_recomendaciones(
-        recomendaciones, productos, maximo=len(recomendaciones)
+        recomendaciones, catalogo, maximo=len(recomendaciones)
     )
     categorias = categorias_alcanzables(tuple(dict.fromkeys(candidatas)), productos, presupuesto)[:MAX_CATEGORIAS]
 
@@ -201,16 +216,21 @@ def armar_pedido_manual(
     categorias: Sequence[str],
     n: int = 5,
     vigentes: Mapping[str, Oferta] | None = None,
+    orden: str = "presupuesto",
 ) -> tuple[Pedido, ...]:
     """Modo mostrador: el vendedor indica presupuesto y categorías. Con una sola
     categoría se combinan dos productos de ella.
 
     Las ofertas vigentes bajan el precio (y así caben más combinaciones) y se
     sugieren primero: van delante los pedidos con más productos en oferta y,
-    entre ellos, los que más aprovechan el presupuesto.
+    entre ellos, los que más aprovechan el presupuesto. Con orden="margen", van
+    primero los que más ganancia dejan (los que no tienen costo cargado, al final).
+    Los productos agotados no se ofrecen.
     """
+    if orden not in ORDENES_MOSTRADOR:
+        raise ValueError(f"Orden desconocido: {orden!r}. Use uno de {sorted(ORDENES_MOSTRADOR)}.")
     vigentes = dict(vigentes or {})
-    productos = aplicar_ofertas(productos, vigentes)
+    productos = aplicar_ofertas(disponibles(productos), vigentes)
     motor.cargar_catalogo(productos)
     combinaciones = motor.armar_pedidos(
         presupuesto, categorias_para_combinar(categorias), max_combinaciones=MAX_COMBINACIONES_MOSTRADOR
@@ -218,7 +238,12 @@ def armar_pedido_manual(
     por_id = {p.id_producto: p for p in productos}
     pedidos = (Pedido(tuple(por_id[i] for i in ids)) for ids in combinaciones)
 
-    def orden(pedido: Pedido) -> tuple:
+    def por_presupuesto(pedido: Pedido) -> tuple:
         return (-sum(i in vigentes for i in pedido.ids), -pedido.subtotal, pedido.ids)
 
-    return tuple(sorted(pedidos, key=orden)[: max(n, 0)])
+    def por_margen(pedido: Pedido) -> tuple:
+        sin_costo = pedido.margen is None
+        return (sin_costo, 0 if sin_costo else -pedido.margen, *por_presupuesto(pedido))
+
+    clave = por_margen if orden == "margen" else por_presupuesto
+    return tuple(sorted(pedidos, key=clave)[: max(n, 0)])

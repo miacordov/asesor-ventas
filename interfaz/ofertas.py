@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from interfaz import comun, estilo
-from interfaz.comun import dinero, nombre_categoria
+from interfaz.comun import dinero, nombre_categoria, texto_stock
 from ventas import administracion as admin
 from ventas.ofertas import (
     PORCENTAJE_MAXIMO,
@@ -19,6 +19,7 @@ from ventas.ofertas import (
     DesempenoTemporada,
     desempeno_en_temporada,
     temporada_proxima,
+    vende_a_perdida,
 )
 
 SUGERENCIAS = {
@@ -78,12 +79,21 @@ def pagina_ofertas() -> None:
     ofertas_registradas(datos, ofertas, hoy)
 
 
+def meses(valor: float | None) -> str:
+    if valor is None:
+        return "—"
+    return "Sin ventas" if math.isinf(valor) else f"{valor:.1f}"
+
+
 def tabla_desempeno(desempeno: tuple[DesempenoTemporada, ...], ofertas: dict) -> None:
     filas = [
         {
             "Producto": d.producto.nombre,
             "Categoría": nombre_categoria(d.producto.categoria),
             "Precio": d.producto.precio,
+            "Margen": d.producto.margen,
+            "Stock": texto_stock(d.producto),
+            "Meses de stock": meses(d.meses_de_stock),
             "Unidades en temporada": d.unidades_temporada,
             "Por mes (temporada)": d.promedio_temporada,
             "Por mes (resto)": d.promedio_resto,
@@ -99,6 +109,10 @@ def tabla_desempeno(desempeno: tuple[DesempenoTemporada, ...], ofertas: dict) ->
         key="tabla_temporada",
         column_config={
             "Precio": st.column_config.NumberColumn(format="S/ %.2f"),
+            "Margen": st.column_config.NumberColumn(format="S/ %.2f", help="Precio menos costo, por unidad."),
+            "Meses de stock": st.column_config.TextColumn(
+                help="Para cuántos meses alcanza el stock al ritmo de venta. «Mover stock» se sugiere desde 3 meses."
+            ),
             "Índice": st.column_config.NumberColumn(format="%.2f", help="Vacío: solo se vende en esta temporada."),
         },
     )
@@ -124,10 +138,14 @@ def formulario_oferta(desempeno: tuple[DesempenoTemporada, ...], fechas) -> None
         st.date_input("Vigencia", value=fechas, format="DD/MM/YYYY", key=f"{clave}_vigencia")
         elegido = por_id[st.session_state[f"{clave}_producto"]].producto
         porcentaje = st.session_state[f"{clave}_porcentaje"]
-        st.caption(
-            f"{elegido.nombre}: {dinero(elegido.precio)} → "
-            f"{dinero(max(round(elegido.precio * (100 - porcentaje) / 100, 2), 0.01))}"
-        )
+        con_oferta = max(round(elegido.precio * (100 - porcentaje) / 100, 2), 0.01)
+        st.caption(f"{elegido.nombre}: {dinero(elegido.precio)} → {dinero(con_oferta)}")
+        if vende_a_perdida(elegido, porcentaje):
+            st.warning(
+                f"Con {porcentaje} % vendes a {dinero(con_oferta)}, por debajo del costo ({dinero(elegido.costo)}): "
+                f"pierdes {dinero(elegido.costo - con_oferta)} por unidad.",
+                icon=":material/trending_down:",
+            )
         st.button("Guardar oferta", type="primary", icon=":material/sell:", on_click=_guardar_oferta, key="guardar_oferta")
 
 

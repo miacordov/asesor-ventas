@@ -10,11 +10,12 @@ import pandas as pd
 import streamlit as st
 
 from interfaz import comun, estilo
-from interfaz.comun import dinero, dinero_corto, nombre_categoria
+from interfaz.comun import dinero, dinero_corto, nombre_categoria, texto_stock
 from ventas import administracion as admin
 from ventas import analisis
-from ventas.combos import lineas_combo, total_combo
+from ventas.combos import DESCUENTO_MAXIMO, ESTADOS
 from ventas.funcional import UMBRAL_FRECUENTE
+from ventas.mensajes import enlace_whatsapp, mensaje_pedido
 from ventas.modelos import ClienteFrecuente
 from ventas.ofertas import ofertas_vigentes
 from ventas.servicio import (
@@ -346,6 +347,9 @@ def lista_productos(datos) -> None:
                 else ""
             ),
             "Precio con oferta": vigentes[p.id_producto].precio(p.precio) if p.id_producto in vigentes else p.precio,
+            "Costo": p.costo,
+            "Margen": p.margen,
+            "Stock": texto_stock(p),
             "Unidades vendidas": int(unidades.get(p.id_producto, 0)),
             "Ingresos": float(ingresos.get(p.id_producto, 0.0)),
         }
@@ -359,6 +363,9 @@ def lista_productos(datos) -> None:
             "Precio actual": st.column_config.NumberColumn(format="S/ %.2f"),
             "Oferta": st.column_config.TextColumn(help="Oferta vigente a la fecha de referencia. Se gestiona en Asesoría › Ofertas de temporada."),
             "Precio con oferta": st.column_config.NumberColumn(format="S/ %.2f"),
+            "Costo": st.column_config.NumberColumn(format="S/ %.2f", help="Vacío: costo no cargado."),
+            "Margen": st.column_config.NumberColumn(format="S/ %.2f", help="Precio actual menos costo, por unidad."),
+            "Stock": st.column_config.TextColumn(help="«Sin control»: el producto no tiene stock cargado y se vende sin límite."),
             "Unidades vendidas": st.column_config.NumberColumn(format="%d"),
             "Ingresos": st.column_config.NumberColumn(format="S/ %.2f"),
         },
@@ -391,12 +398,40 @@ def categoria_elegida(clave: str) -> str:
     return st.session_state.get(f"{clave}_cat_nueva", "") if elegida == NUEVA_CATEGORIA else elegida
 
 
+def campos_costo_y_stock(clave: str, producto=None) -> None:
+    izquierda, derecha = st.columns(2)
+    izquierda.number_input(
+        "Costo (S/)",
+        min_value=0.01,
+        value=None if producto is None else producto.costo,
+        step=1.0,
+        format="%.2f",
+        placeholder="Sin cargar",
+        key=f"{clave}_costo",
+        help="Lo que te cuesta. Sirve para ver el margen y no ofertar por debajo del costo.",
+    )
+    derecha.number_input(
+        "Stock (unidades)",
+        min_value=0,
+        value=None if producto is None else producto.stock,
+        step=1,
+        placeholder="Sin control",
+        key=f"{clave}_stock",
+        help="Vacío: no se controla. Con stock cargado, cada venta lo descuenta y no se vende lo que no hay.",
+    )
+
+
 def _crear_producto() -> None:
     v = comun.version("producto")
     clave = f"np_{v}"
     try:
         producto = admin.crear_producto(
-            _repo(), st.session_state[f"{clave}_nombre"], categoria_elegida(clave), st.session_state[f"{clave}_precio"]
+            _repo(),
+            st.session_state[f"{clave}_nombre"],
+            categoria_elegida(clave),
+            st.session_state[f"{clave}_precio"],
+            costo=st.session_state.get(f"{clave}_costo"),
+            stock=st.session_state.get(f"{clave}_stock"),
         )
     except ValueError as error:
         comun.avisar("error", str(error))
@@ -411,6 +446,7 @@ def nuevo_producto(datos) -> None:
         st.text_input("Nombre del producto", key=f"{clave}_nombre", placeholder="Ej.: Impresora láser")
         selector_categoria(datos, clave)
         st.number_input("Precio (S/)", min_value=0.01, value=50.0, step=1.0, format="%.2f", key=f"{clave}_precio")
+        campos_costo_y_stock(clave)
         st.button("Registrar producto", type="primary", icon=":material/add_box:", on_click=_crear_producto)
 
 
@@ -418,7 +454,13 @@ def _guardar_producto(id_producto: str) -> None:
     clave = f"ep_{id_producto}_{comun.version('producto_ed')}"
     try:
         producto = admin.editar_producto(
-            _repo(), id_producto, st.session_state[f"{clave}_nombre"], categoria_elegida(clave), st.session_state[f"{clave}_precio"]
+            _repo(),
+            id_producto,
+            st.session_state[f"{clave}_nombre"],
+            categoria_elegida(clave),
+            st.session_state[f"{clave}_precio"],
+            costo=st.session_state.get(f"{clave}_costo"),
+            stock=st.session_state.get(f"{clave}_stock"),
         )
     except ValueError as error:
         comun.avisar("error", str(error))
@@ -450,6 +492,7 @@ def editar_producto(datos) -> None:
         st.text_input("Nombre del producto", value=producto.nombre, key=f"{clave}_nombre")
         selector_categoria(datos, clave, actual=producto.categoria)
         st.number_input("Precio (S/)", min_value=0.01, value=float(producto.precio), step=1.0, format="%.2f", key=f"{clave}_precio")
+        campos_costo_y_stock(clave, producto)
         st.caption("Cambiar el precio no altera las ventas ya registradas: cada venta conserva el precio con que se hizo.")
         st.button(
             "Guardar cambios", type="primary", icon=":material/save:", on_click=_guardar_producto, args=(elegido,), key=f"guardar_producto_{elegido}"
@@ -477,74 +520,112 @@ def pagina_ventas() -> None:
     )
     datos, hoy = comun.datos(), comun.fecha_referencia()
     pendientes = [c for c in comun.combos() if c.pendiente]
-    registrar, combos, historial = st.tabs(
-        ["Registrar venta", f"Combos por registrar ({len(pendientes)})", "Historial"]
+    registrar, abiertos, historial = st.tabs(
+        ["Registrar venta", f"Pedidos abiertos ({len(pendientes)})", "Historial"]
     )
     with registrar:
         formulario_venta(datos, hoy)
-    with combos:
-        combos_por_registrar(datos, pendientes, hoy)
+    with abiertos:
+        pedidos_abiertos(datos, pendientes, hoy)
     with historial:
         historial_ventas(datos)
 
 
-def combos_por_registrar(datos, pendientes, hoy) -> None:
+def pedidos_abiertos(datos, pendientes, hoy) -> None:
     if not pendientes:
         st.info(
-            "No hay combos por registrar. Guárdalos desde Asesoría › Arma mi pedido con «Guardar combinación».",
+            "No hay pedidos abiertos. Guárdalos desde la agenda («Guardar como pedido») "
+            "o desde Asesoría › Arma mi pedido («Guardar combinación»).",
             icon=":material/shopping_cart:",
         )
         return
     if not comun.fecha_valida(datos, hoy):
         return
-    vigentes = ofertas_vigentes(comun.ofertas(), hoy)
-    clientes = {c.id_cliente: c.nombre for c in datos.clientes}
+    repo = _repo()
+    clientes = {c.id_cliente: c for c in datos.clientes}
     for combo in pendientes:
-        lineas = lineas_combo(combo, datos.productos, vigentes)
+        cotizacion = admin.cotizar_combo(repo, combo.id_combo, hoy)
+        nombre = clientes[combo.id_cliente].nombre if combo.registrado else f"{combo.nombre_cliente} (no registrado)"
         with st.container(border=True, key=f"combo_{combo.id_combo}"):
-            cliente = clientes[combo.id_cliente] if combo.registrado else f"{combo.nombre_cliente} (no registrado)"
-            st.markdown(f"**Combo {combo.id_combo} · {cliente}** · guardado el {combo.fecha:%d/%m/%Y}")
+            st.markdown(
+                f"**Pedido {combo.id_combo} · {nombre}** · {ESTADOS[combo.estado]} · guardado el {combo.fecha:%d/%m/%Y}"
+            )
             if not combo.registrado:
                 st.caption("Al registrar la venta, este cliente queda registrado con su nombre (sin teléfono).")
-            filas = "".join(
-                estilo.fila_producto(
-                    linea.producto.nombre,
-                    linea.producto.categoria,
-                    dinero(linea.precio),
-                    f"Oferta -{linea.oferta.porcentaje} % hasta el {linea.oferta.hasta:%d/%m/%Y} · antes {dinero(linea.producto.precio)}"
-                    if linea.oferta
-                    else nombre_categoria(linea.producto.categoria),
+            st.markdown(comun.html_cotizacion(cotizacion), unsafe_allow_html=True)
+            incompleto = len(cotizacion.lineas) < len(combo.ids_productos)
+            if incompleto:
+                st.warning("Este pedido tiene productos que ya no están en el catálogo: descártalo.", icon=":material/warning:")
+            if combo.estado == "borrador":
+                cliente = admin.cliente_clasificado(datos, combo.id_cliente, hoy)
+                del_cliente = round(cliente.descuento() * 100) if cliente else 0
+                st.number_input(
+                    "Descuento del pedido (%)",
+                    min_value=0,
+                    max_value=DESCUENTO_MAXIMO,
+                    value=combo.descuento,
+                    step=1,
+                    placeholder=f"El del cliente ({del_cliente} %)",
+                    key=f"descuento_{combo.id_combo}",
+                    on_change=_cambiar_descuento,
+                    args=(combo.id_combo,),
                 )
-                for linea in lineas
-            )
-            normal = round(sum(linea.producto.precio for linea in lineas), 2)
-            total = total_combo(lineas)
-            if total < normal:
-                cierre = estilo.total("Total", dinero(total), tachado=dinero(normal), nota=f"Ahorras {dinero(normal - total)} con las ofertas vigentes")
-            else:
-                cierre = estilo.total("Total", dinero(total))
-            st.markdown(filas + cierre, unsafe_allow_html=True)
-            if len(lineas) < len(combo.ids_productos):
-                st.warning("Este combo tiene productos que ya no están en el catálogo: descártalo.", icon=":material/warning:")
-            registrar, descartar = st.columns([1, 1])
-            registrar.button(
+                st.caption(f"Sin descuento manual se aplica el del cliente: {del_cliente} %.")
+            elif combo.registrado and clientes[combo.id_cliente].telefono:
+                texto = mensaje_pedido(nombre, cotizacion)
+                st.link_button(
+                    "Reenviar por WhatsApp",
+                    enlace_whatsapp(clientes[combo.id_cliente].telefono, texto),
+                    icon=":material/chat:",
+                )
+            botones = st.columns(3)
+            if combo.estado == "borrador":
+                botones[0].button(
+                    "Marcar como enviado",
+                    key=f"enviar_combo_{combo.id_combo}",
+                    icon=":material/send:",
+                    on_click=_enviar_combo,
+                    args=(combo.id_combo, nombre, hoy),
+                    disabled=incompleto,
+                    help="Fija los precios y el descuento: se cobrará lo prometido aunque venza una oferta.",
+                    width="stretch",
+                )
+            botones[1].button(
                 "Registrar venta",
                 key=f"registrar_combo_{combo.id_combo}",
                 type="primary",
                 icon=":material/add_circle:",
                 on_click=_registrar_combo,
                 args=(combo.id_combo, hoy),
-                disabled=len(lineas) < len(combo.ids_productos),
+                disabled=incompleto,
                 width="stretch",
             )
-            descartar.button(
+            botones[2].button(
                 "Descartar",
                 key=f"descartar_combo_{combo.id_combo}",
                 on_click=_descartar_combo,
                 args=(combo.id_combo,),
                 width="stretch",
             )
-    st.caption("Cada producto se registra al precio de la fecha de referencia: con su oferta si sigue vigente.")
+    st.caption(
+        "Un borrador se cobra con las ofertas de la fecha de referencia; uno enviado, con los precios que se le prometieron."
+    )
+
+
+def _cambiar_descuento(id_combo: str) -> None:
+    try:
+        admin.cambiar_descuento(_repo(), id_combo, st.session_state.get(f"descuento_{id_combo}"))
+    except ValueError as error:
+        comun.avisar("error", str(error))
+
+
+def _enviar_combo(id_combo: str, nombre: str, hoy) -> None:
+    try:
+        admin.enviar_combo(_repo(), id_combo, hoy)
+    except ValueError as error:
+        comun.avisar("error", str(error))
+    else:
+        comun.avisar("exito", f"Pedido {id_combo} enviado a {nombre}: sus precios quedan fijos.")
 
 
 def _registrar_combo(id_combo: str, hoy) -> None:
@@ -569,7 +650,7 @@ def _registrar_combo(id_combo: str, hoy) -> None:
     cambio = describir_cambio_agenda(nombre, antes.get(id_cliente), despues.get(id_cliente))
     comun.avisar(
         "exito",
-        f"Combo {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}.{nuevo} {cambio}",
+        f"Pedido {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}.{nuevo} {cambio}",
     )
 
 
@@ -579,7 +660,7 @@ def _descartar_combo(id_combo: str) -> None:
     except ValueError as error:
         comun.avisar("error", str(error))
     else:
-        comun.avisar("exito", f"Combo {id_combo} descartado.")
+        comun.avisar("exito", f"Pedido {id_combo} descartado.")
 
 
 def _registrar_venta(hoy) -> None:
@@ -611,6 +692,15 @@ def _registrar_venta(hoy) -> None:
     comun.reiniciar("venta")
 
 
+def etiqueta_venta(producto) -> str:
+    etiqueta = f"{producto.nombre} · {dinero(producto.precio)}"
+    if producto.stock is None:
+        return etiqueta
+    if producto.stock == 0:
+        return f"{etiqueta} · agotado"
+    return f"{etiqueta} · {'queda 1' if producto.stock == 1 else f'quedan {producto.stock}'}"
+
+
 def formulario_venta(datos, hoy) -> None:
     if not datos.clientes or not datos.productos:
         st.info("Para registrar una venta primero necesitas al menos un cliente y un producto.", icon=":material/info:")
@@ -626,7 +716,7 @@ def formulario_venta(datos, hoy) -> None:
         id_producto = derecha.selectbox(
             "Producto",
             list(productos),
-            format_func=lambda i: f"{productos[i].nombre} · {dinero(productos[i].precio)}",
+            format_func=lambda i: etiqueta_venta(productos[i]),
             key=f"venta_producto_{v}",
         )
         c1, c2, c3 = st.columns(3)

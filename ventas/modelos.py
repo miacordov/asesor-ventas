@@ -62,6 +62,8 @@ class Producto:
     nombre: str
     categoria: str
     precio: float
+    costo: float | None = None  # lo que cuesta comprarlo (None: no cargado)
+    stock: int | None = None  # unidades disponibles (None: no se controla)
 
     def __post_init__(self) -> None:
         _validar_id(self.id_producto, "id_producto")
@@ -69,6 +71,17 @@ class Producto:
         _validar_id(self.categoria, "categoria")
         if not isinstance(self.precio, (int, float)) or self.precio <= 0:
             raise ValueError(f"precio debe ser mayor que 0, recibido: {self.precio!r}")
+        if self.costo is not None and (
+            isinstance(self.costo, bool) or not isinstance(self.costo, (int, float)) or self.costo <= 0
+        ):
+            raise ValueError(f"costo debe ser mayor que 0, recibido: {self.costo!r}")
+        if self.stock is not None and (isinstance(self.stock, bool) or not isinstance(self.stock, int) or self.stock < 0):
+            raise ValueError(f"stock debe ser un entero >= 0, recibido: {self.stock!r}")
+
+    @property
+    def margen(self) -> float | None:
+        """Ganancia por unidad al precio normal (None sin costo)."""
+        return None if self.costo is None else round(self.precio - self.costo, 2)
 
 
 @dataclass(frozen=True)

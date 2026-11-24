@@ -3,7 +3,7 @@
 Ejecutar desde la carpeta del proyecto:  streamlit run app.py
 
 Dos secciones: Asesoría (agenda de fidelización, modo mostrador, ofertas de temporada y
-propuestas personalizadas) y Administración (resumen,
+pedidos) y Administración (resumen,
 clientes, productos y ventas). Las pantallas viven en paginas/ y se dibujan con
 el código de interfaz/; la lógica de negocio está en ventas/.
 """
@@ -37,7 +37,7 @@ st.logo(estilo.LOGO_SVG, size="large")
 
 st.sidebar.date_input(
     "Fecha de referencia",
-    value=comun.FECHA_DEMO,
+    value=comun.fecha_inicial(),
     key="fecha_referencia",
     format="DD/MM/YYYY",
     help="Los días sin comprar se cuentan hasta esta fecha.",
@@ -50,7 +50,6 @@ navegacion = st.navigation(
             st.Page("paginas/agenda.py", title="Agenda de fidelización", icon=":material/event_note:", default=True),
             st.Page("paginas/pedido.py", title="Arma mi pedido", icon=":material/shopping_cart:", url_path="pedido"),
             st.Page("paginas/ofertas.py", title="Ofertas de temporada", icon=":material/sell:", url_path="ofertas"),
-            st.Page("paginas/propuesta.py", title="Propuesta personalizada", icon=":material/edit_note:", url_path="propuesta"),
         ],
         "Administración": [
             st.Page("paginas/resumen.py", title="Resumen", icon=":material/dashboard:", url_path="resumen"),

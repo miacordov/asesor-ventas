@@ -56,11 +56,15 @@ def _cliente(fila: dict[str, str]) -> Cliente:
 
 
 def _producto(fila: dict[str, str]) -> Producto:
+    costo = (fila.get("costo") or "").strip()  # columnas opcionales
+    stock = (fila.get("stock") or "").strip()
     return Producto(
         fila["id_producto"].strip(),
         fila["nombre"].strip(),
         fila["categoria"].strip(),
         _decimal(fila["precio"], "precio"),
+        costo=_decimal(costo, "costo") if costo else None,
+        stock=_entero(stock, "stock") if stock else None,
     )
 
 

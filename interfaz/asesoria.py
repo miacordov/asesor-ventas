@@ -6,11 +6,13 @@ import streamlit as st
 from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
 from ventas import administracion as admin
-from ventas.funcional import UMBRAL_FRECUENTE
-from ventas.logico import DIAS_INACTIVIDAD
+from ventas.combos import ESTADOS
+from ventas.contactos import RESULTADOS, conversion, pospuestos, ultimo_contacto
+from ventas.funcional import UMBRAL_FRECUENTE, VENTANA_FRECUENCIA
+from ventas.mensajes import enumerar
 from ventas.modelos import ClienteFrecuente
 from ventas.ofertas import ofertas_vigentes
-from ventas.pedido import armar_pedido_manual
+from ventas.pedido import ORDENES_MOSTRADOR, armar_pedido_manual
 from ventas.servicio import TarjetaAgenda, construir_tarjetas
 
 TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
@@ -20,6 +22,7 @@ MOTIVOS_OFERTA = {
     "cliente_frecuente": "Compra seguido",
 }
 REGISTRADO, NO_REGISTRADO = "Registrado", "No registrado"
+CHIP_PEDIDO = {"borrador": "Pedido en borrador", "enviado": "Pedido enviado"}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
@@ -39,7 +42,7 @@ def pagina_agenda() -> None:
     vigentes = ofertas_vigentes(comun.ofertas(), hoy)
     motor, candado = comun.motor_y_candado()
     with candado:
-        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes, propuestas=comun.propuestas())
+        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes, pedidos=comun.combos())
     if not tarjetas:
         st.info(
             "Todavía no hay clientes para contactar. Registra ventas en Administración › Ventas "
@@ -48,7 +51,17 @@ def pagina_agenda() -> None:
         )
         return
 
-    resumen_superior(tarjetas)
+    contactos = comun.contactos()
+    en_espera = pospuestos(contactos, hoy) & {t.cliente.id_cliente for t in tarjetas}
+    if en_espera:
+        st.toggle(
+            f"Mostrar también los pospuestos ({len(en_espera)})",
+            key="ver_pospuestos",
+            help="Clientes que contactaste y pediste volver a mostrar más adelante.",
+        )
+    if not st.session_state.get("ver_pospuestos"):
+        tarjetas = tuple(t for t in tarjetas if t.cliente.id_cliente not in en_espera)
+    resumen_superior(tarjetas, conversion(contactos, datos.ventas, hoy))
     st.caption(
         "**Reactivar:** compraban seguido y dejaron de venir. **Fidelizar:** clientes frecuentes y activos. "
         "**Complementar:** compran poco, se les ofrece lo que llevan otros. "
@@ -67,11 +80,10 @@ def pagina_agenda() -> None:
                     tarjeta(posicion, tarjeta_)
 
 
-def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
+def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...], conv) -> None:
     def cuantos(tipo: str) -> int:
         return sum(t.entrada.accion.tipo == tipo for t in tarjetas)
 
-    potencial = sum(t.pedidos[0].total_con_descuento for t in tarjetas if t.pedidos)
     with st.container(key="fila_indicadores"):
         c = st.columns([1, 1, 1, 1, 1.5])
     c[0].metric("Contactos", len(tarjetas), border=True)
@@ -79,9 +91,10 @@ def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
     c[2].metric("Por fidelizar", cuantos("fidelizar"), border=True)
     c[3].metric("Complementar", cuantos("cruzar"), border=True)
     c[4].metric(
-        "Valor en pedidos sugeridos",
-        dinero(potencial),
+        "Conversión (15 días)",
+        "—" if conv.tasa is None else f"{conv.tasa:.0%}".replace("%", " %"),
         border=True,
+        help=f"De {conv.contactos} contactos registrados, {conv.compraron} terminaron en una compra en los 15 días siguientes.",
     )
 
 
@@ -95,14 +108,33 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             + estilo.chip(f"Prioridad {accion.prioridad}")
             + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular")
             + (estilo.chip("Oferta para este cliente", "ok") if t.ofertas else "")
-            + (estilo.chip("Propuesta lista para enviar", "media") if t.propuesta else ""),
+            + (estilo.chip(CHIP_PEDIDO[t.pedido.estado], "media") if t.pedido else ""),
             unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
-        if t.propuesta:
-            mostrar_propuesta_guardada(t)
+        ultimo = ultimo_contacto(comun.contactos(), t.cliente.id_cliente)
+        if ultimo:
+            vuelve = f" · vuelve el {ultimo.volver_el:%d/%m/%Y}" if ultimo.volver_el > ultimo.fecha else ""
+            st.caption(f"Último contacto: {ultimo.fecha:%d/%m/%Y} · {ultimo.texto}{vuelve}")
+        if t.pedido:
+            st.markdown(
+                comun.html_cotizacion(
+                    t.cotizacion,
+                    f"Pedido {t.pedido.id_combo} · {ESTADOS[t.pedido.estado]} · guardado el {t.pedido.fecha:%d/%m/%Y}",
+                ),
+                unsafe_allow_html=True,
+            )
+            st.caption("Ajusta el descuento, márcalo como enviado o regístralo en Administración › Ventas › Pedidos abiertos.")
         else:
             mostrar_pedido_resumido(t)
+            if t.pedidos:
+                st.button(
+                    "Guardar como pedido",
+                    key=f"guardar_sugerido_{t.cliente.id_cliente}",
+                    icon=":material/add_shopping_cart:",
+                    on_click=_guardar_sugerido,
+                    args=(t.cliente.id_cliente, t.cliente.nombre, t.pedidos[0].pedido.ids),
+                )
         boton_whatsapp, por_que, mensaje, personalizar = st.columns([1.35, 1, 1, 1.25])
         if t.mensaje.enlace:
             boton_whatsapp.link_button(
@@ -116,14 +148,18 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             st.write(t.mensaje.texto)
             if not t.mensaje.enlace:
                 st.caption("Este cliente no tiene teléfono registrado; agrégalo en Administración › Clientes.")
+        with st.popover("Registrar contacto", icon=":material/how_to_reg:", width="stretch"):
+            formulario_contacto(t)
         if personalizar.button(
-            "Editar propuesta" if t.propuesta else "Personalizar",
+            "Personalizar",
             key=f"personalizar_{t.cliente.id_cliente}",
             icon=":material/edit_note:",
             width="stretch",
+            help="Abre «Arma mi pedido» con este cliente elegido.",
         ):
-            st.session_state["propuesta_cliente"] = t.cliente.id_cliente
-            st.switch_page("paginas/propuesta.py")
+            st.session_state["combo_tipo"] = REGISTRADO
+            st.session_state["combo_cliente"] = t.cliente.id_cliente
+            st.switch_page("paginas/pedido.py")
 
 
 def filas_html(productos) -> str:
@@ -146,27 +182,49 @@ def filas_sugerido_html(sugerido) -> str:
     )
 
 
-def mostrar_propuesta_guardada(t: TarjetaAgenda) -> None:
-    """El combo armado a mano reemplaza al pedido sugerido en la tarjeta."""
-    p = t.propuesta
-    por_id = {x.id_producto: x for x in comun.datos().productos}
-    filas = "".join(
-        estilo.fila_producto(
-            por_id[linea.id_producto].nombre,
-            por_id[linea.id_producto].categoria,
-            dinero(linea.precio),
-            f"Oferta · antes {dinero(linea.precio_normal)}" if linea.en_oferta else nombre_categoria(por_id[linea.id_producto].categoria),
-        )
-        for linea in p.lineas
+def formulario_contacto(t: TarjetaAgenda) -> None:
+    id_cliente = t.cliente.id_cliente
+    resultado = st.radio(
+        "¿Cómo te fue?", list(RESULTADOS), format_func=lambda r: RESULTADOS[r][0], key=f"resultado_{id_cliente}"
     )
-    if p.descuento:
-        cierre = estilo.total("Total", dinero(p.total), tachado=dinero(p.subtotal), nota=f"{p.descuento} % de descuento al combo")
-    else:
-        cierre = estilo.total("Total", dinero(p.total))
-    st.markdown(
-        f'<div class="pedido-titulo">Propuesta guardada el {p.fecha:%d/%m/%Y}</div>' + filas + cierre,
-        unsafe_allow_html=True,
+    st.number_input(
+        "Volver a mostrar en (días)",
+        min_value=0,
+        max_value=365,
+        value=RESULTADOS[resultado][1],
+        step=1,
+        key=f"dias_{id_cliente}_{resultado}",
     )
+    st.button(
+        "Guardar contacto",
+        key=f"guardar_contacto_{id_cliente}",
+        type="primary",
+        on_click=_guardar_contacto,
+        args=(id_cliente, t.cliente.nombre),
+    )
+
+
+def _guardar_contacto(id_cliente: str, nombre: str) -> None:
+    resultado = st.session_state[f"resultado_{id_cliente}"]
+    dias = st.session_state.get(f"dias_{id_cliente}_{resultado}")
+    try:
+        contacto = admin.registrar_contacto(comun.repositorio(), id_cliente, resultado, comun.fecha_referencia(), dias)
+    except ValueError as error:
+        comun.avisar("error", str(error))
+        return
+    vuelta = (
+        f" Vuelve a la agenda el {contacto.volver_el:%d/%m/%Y}." if contacto.volver_el > contacto.fecha else ""
+    )
+    comun.avisar("exito", f"Contacto con {nombre} registrado: {contacto.texto}.{vuelta}")
+
+
+def _guardar_sugerido(id_cliente: str, nombre: str, ids: tuple[str, ...]) -> None:
+    try:
+        combo = admin.guardar_combo(comun.repositorio(), id_cliente, list(ids), comun.fecha_referencia())
+    except ValueError as error:
+        comun.avisar("error", str(error))
+        return
+    comun.avisar("exito", f"Pedido {combo.id_combo} guardado para {nombre}.")
 
 
 def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
@@ -194,10 +252,19 @@ def mostrar_por_que(t: TarjetaAgenda) -> None:
     accion = t.entrada.accion
     st.markdown("**Reglas de Prolog que se aplicaron**")
     st.markdown("".join(estilo.chip(m) for m in accion.motivos), unsafe_allow_html=True)
+    perfil = t.entrada.perfil
+    if perfil.intervalo_promedio is None:
+        ritmo = "Todavía no tiene un ritmo de compra"
+    else:
+        ritmo = f"Compra cada {perfil.intervalo_promedio:g} días en promedio"
     st.caption(
-        f"Frecuente: {UMBRAL_FRECUENTE} compras o más. "
-        f"Inactivo: más de {DIAS_INACTIVIDAD} días sin comprar."
+        f"Frecuente: {UMBRAL_FRECUENTE} compras o más en los últimos {VENTANA_FRECUENCIA} días "
+        f"(lleva {perfil.compras_recientes}). {ritmo}: se considera inactivo pasados "
+        f"{t.limite_inactividad} días sin comprar."
     )
+    if t.complementos:
+        partes = [f"{p.nombre} ({dinero(p.precio)})" for p in t.complementos]
+        st.markdown(f"**Complementa lo que compró:** {enumerar(partes)}")
     if t.ofertas:
         st.markdown("**Ofertas pensadas para este cliente**")
         st.dataframe(
@@ -298,9 +365,18 @@ def pagina_pedido() -> None:
             st.info("Elige al menos una categoría para ver combinaciones.", icon=":material/touch_app:")
             return
         sugerir_otras_ofertas(datos, vigentes, elegidas)
+        orden = st.segmented_control(
+            "Ordenar por",
+            list(ORDENES_MOSTRADOR),
+            default="presupuesto",
+            format_func=ORDENES_MOSTRADOR.get,
+            key="orden_combinaciones",
+        ) or "presupuesto"
         motor, candado = comun.motor_y_candado()
         with candado:
-            pedidos = armar_pedido_manual(motor, datos.productos, presupuesto, list(elegidas), n=5, vigentes=vigentes)
+            pedidos = armar_pedido_manual(
+                motor, datos.productos, presupuesto, list(elegidas), n=5, vigentes=vigentes, orden=orden
+            )
         if not pedidos:
             st.warning(
                 "Ninguna combinación de al menos 2 productos cabe en ese presupuesto. "
@@ -309,7 +385,9 @@ def pagina_pedido() -> None:
             )
             return
         st.subheader(f"{len(pedidos)} combinaciones")
-        if any(i in vigentes for p in pedidos for i in p.ids):
+        if orden == "margen":
+            st.caption("De la que más ganancia deja a la que menos (las que tienen productos sin costo cargado, al final).")
+        elif any(i in vigentes for p in pedidos for i in p.ids):
             st.caption("Primero las que llevan productos en oferta; luego, de la que más aprovecha el presupuesto a la que menos.")
         else:
             st.caption("De la que más aprovecha el presupuesto a la que menos.")
@@ -318,6 +396,8 @@ def pagina_pedido() -> None:
             con_oferta = [i for i in pedido.ids if i in vigentes]
             with st.container(border=True, key=f"opcion_{numero}"):
                 st.markdown(f"**Opción {numero} · {dinero(pedido.subtotal)}** · sobran {dinero(presupuesto - pedido.subtotal)}")
+                if pedido.margen is not None:
+                    st.markdown(f"Margen: {dinero(pedido.margen)}")
                 if con_oferta:
                     ahorro = sum(normal[i] for i in pedido.ids) - pedido.subtotal
                     st.markdown(
@@ -366,7 +446,7 @@ def _guardar_combo(ids: tuple[str, ...]) -> None:
         nombre = f"{combo.nombre_cliente} (no registrado)"
     comun.avisar(
         "exito",
-        f"Combinación {combo.id_combo} guardada para {nombre}. Regístrala en Administración › Ventas › Combos por registrar.",
+        f"Combinación {combo.id_combo} guardada para {nombre}. Gestiónala en Administración › Ventas › Pedidos abiertos.",
     )
 
 

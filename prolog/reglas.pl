@@ -4,15 +4,35 @@
 %   compro(Cliente, Producto).
 %
 % Idea: a un cliente se le recomienda lo que compraron otros clientes
-% "similares" (que comparten al menos un producto con el) y que el aun no tiene.
+% "similares" (que comparten al menos dos productos con el) y que el aun no tiene.
 
 :- dynamic compro/2.
 
-% Dos clientes son similares si compraron al menos un producto en comun.
-similar(C, Otro) :-
+% Cuantos productos en comun hacen falta para que dos clientes se parezcan.
+% Si el cliente compro menos productos que eso, basta con que coincidan todos.
+minimo_en_comun(2).
+
+% Otro cliente que compro al menos uno de los productos de C.
+candidato(C, Otro) :-
     compro(C, P),
     compro(Otro, P),
     C \== Otro.
+
+en_comun(C, Otro, N) :-
+    aggregate_all(count, ( compro(C, P), compro(Otro, P) ), N).
+
+minimo_para(C, M) :-
+    minimo_en_comun(Minimo),
+    aggregate_all(count, compro(C, _), Propios),
+    M is min(Minimo, Propios).
+
+% Dos clientes son similares si comparten suficientes productos.
+similar(C, Otro) :-
+    setof(X, candidato(C, X), Candidatos),
+    member(Otro, Candidatos),
+    en_comun(C, Otro, N),
+    minimo_para(C, M),
+    N >= M.
 
 % Lista ordenada y sin repetidos de clientes similares ([] si no hay ninguno).
 clientes_similares(C, Lista) :-
