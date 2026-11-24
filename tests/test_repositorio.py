@@ -468,3 +468,43 @@ def test_restablecer_los_datos_borra_los_combos(repo_con_datos, datos):
     repo_con_datos.agregar_combo(Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5)))
     repo_con_datos.reemplazar_todo(datos)
     assert repo_con_datos.cargar_combos() == ()
+
+
+def test_una_base_con_la_tabla_combos_vieja_se_migra_sin_perder_nada(tmp_path, datos):
+    # Esquema anterior: combos.id_cliente era obligatorio y no había nombre_cliente.
+    import sqlite3
+
+    ruta = str(tmp_path / "vieja.db")
+    viejo = RepositorioSQLite(ruta)
+    viejo.reemplazar_todo(datos)
+    viejo.cerrar()
+    con = sqlite3.connect(ruta)
+    con.execute("PRAGMA foreign_keys = OFF")
+    con.executescript(
+        """
+        DROP TABLE combos;
+        CREATE TABLE combos (
+            id_combo   TEXT PRIMARY KEY,
+            id_cliente TEXT NOT NULL REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+            fecha      TEXT NOT NULL
+        );
+        INSERT INTO combos VALUES ('cb001', 'c001', '2026-10-05');
+        INSERT INTO combo_productos VALUES ('cb001', 'p002', 0), ('cb001', 'p009', 1);
+        INSERT INTO combo_ventas VALUES ('cb001', 'v001', 0);
+        """
+    )
+    con.commit()
+    con.close()
+
+    migrado = RepositorioSQLite(ruta)
+    assert migrado.cargar_todo() == datos
+    assert migrado.cargar_combos() == (Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5), ("v001",)),)
+    # Ya admite clientes no registrados, y las claves foráneas siguen activas.
+    migrado.agregar_combo(Combo("cb002", None, ("p002", "p009"), date(2026, 10, 5), nombre_cliente="Pedro"))
+    with pytest.raises(ErrorDatos):
+        migrado.agregar_combo(Combo("cb003", "c999", ("p002", "p009"), date(2026, 10, 5)))
+    migrado.cerrar()
+    # Abrirla otra vez no vuelve a migrar ni pierde nada.
+    otra_vez = RepositorioSQLite(ruta)
+    assert [c.id_combo for c in otra_vez.cargar_combos()] == ["cb001", "cb002"]
+    otra_vez.cerrar()

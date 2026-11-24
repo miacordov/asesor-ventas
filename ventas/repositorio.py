@@ -67,9 +67,11 @@ CREATE TABLE IF NOT EXISTS propuesta_productos (
     PRIMARY KEY (id_cliente, id_producto)
 );
 CREATE TABLE IF NOT EXISTS combos (
-    id_combo   TEXT PRIMARY KEY,
-    id_cliente TEXT NOT NULL REFERENCES clientes (id_cliente) ON DELETE CASCADE,
-    fecha      TEXT NOT NULL
+    id_combo       TEXT PRIMARY KEY,
+    id_cliente     TEXT REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+    nombre_cliente TEXT NOT NULL DEFAULT '',  -- cliente no registrado (sin id_cliente)
+    fecha          TEXT NOT NULL,
+    CHECK ((id_cliente IS NULL) <> (nombre_cliente = ''))
 );
 CREATE TABLE IF NOT EXISTS combo_productos (
     id_combo    TEXT NOT NULL REFERENCES combos (id_combo) ON DELETE CASCADE,
@@ -159,8 +161,9 @@ class Repositorio(ABC):
     def eliminar_combo(self, id_combo: str) -> None: ...
 
     @abstractmethod
-    def registrar_combo(self, id_combo: str, ventas: tuple[Venta, ...]) -> None:
-        """Guarda las ventas del combo y las enlaza a él, todo o nada."""
+    def registrar_combo(self, id_combo: str, ventas: tuple[Venta, ...], cliente_nuevo: Cliente | None = None) -> None:
+        """Guarda las ventas del combo y las enlaza a él, todo o nada. Si el combo
+        era de un cliente no registrado, `cliente_nuevo` se registra en la misma operación."""
 
 
 class RepositorioSQLite(Repositorio):
@@ -172,6 +175,39 @@ class RepositorioSQLite(Repositorio):
         self._con.execute("PRAGMA foreign_keys = ON")
         with self._candado, self._con:
             self._con.executescript(_ESQUEMA)
+        self._migrar_combos_sin_cliente()
+
+    def _migrar_combos_sin_cliente(self) -> None:
+        """Bases creadas antes de admitir clientes no registrados: la tabla combos
+        exigía id_cliente. SQLite no cambia un NOT NULL con ALTER TABLE, así que se
+        rehace la tabla copiando sus filas (las de combo_productos y combo_ventas
+        no se tocan: siguen apuntando al mismo id_combo)."""
+        with self._candado:
+            columnas = [fila[1] for fila in self._con.execute("PRAGMA table_info(combos)")]
+            if "nombre_cliente" in columnas:
+                return
+            # Sin claves foráneas mientras se rehace: DROP TABLE no debe borrar en cascada.
+            self._con.execute("PRAGMA foreign_keys = OFF")
+            try:
+                with self._con:
+                    self._con.execute(
+                        """CREATE TABLE combos_nuevo (
+                            id_combo       TEXT PRIMARY KEY,
+                            id_cliente     TEXT REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+                            nombre_cliente TEXT NOT NULL DEFAULT '',
+                            fecha          TEXT NOT NULL,
+                            CHECK ((id_cliente IS NULL) <> (nombre_cliente = ''))
+                        )"""
+                    )
+                    self._con.execute(
+                        "INSERT INTO combos_nuevo (id_combo, id_cliente, fecha) SELECT id_combo, id_cliente, fecha FROM combos"
+                    )
+                    self._con.execute("DROP TABLE combos")
+                    self._con.execute("ALTER TABLE combos_nuevo RENAME TO combos")
+                    if self._con.execute("PRAGMA foreign_key_check").fetchall():
+                        raise sqlite3.IntegrityError("la migración de combos dejó referencias rotas")
+            finally:
+                self._con.execute("PRAGMA foreign_keys = ON")
 
     def cerrar(self) -> None:
         with self._candado:
@@ -378,7 +414,9 @@ class RepositorioSQLite(Repositorio):
         """Los combos guardados. Uno que perdió productos (borrados del catálogo)
         y quedó con menos de 2 ya no es un combo y no se devuelve."""
         with self._candado:
-            cabeceras = self._con.execute("SELECT id_combo, id_cliente, fecha FROM combos ORDER BY id_combo").fetchall()
+            cabeceras = self._con.execute(
+                "SELECT id_combo, id_cliente, fecha, nombre_cliente FROM combos ORDER BY id_combo"
+            ).fetchall()
             productos = self._con.execute("SELECT id_combo, id_producto FROM combo_productos ORDER BY id_combo, orden").fetchall()
             ventas = self._con.execute("SELECT id_combo, id_venta FROM combo_ventas ORDER BY id_combo, orden").fetchall()
         de_productos: dict[str, list[str]] = {}
@@ -388,15 +426,18 @@ class RepositorioSQLite(Repositorio):
         for id_combo, id_venta in ventas:
             de_ventas.setdefault(id_combo, []).append(id_venta)
         return tuple(
-            Combo(i, c, tuple(de_productos[i]), date.fromisoformat(f), tuple(de_ventas.get(i, ())))
-            for i, c, f in cabeceras
+            Combo(i, c, tuple(de_productos[i]), date.fromisoformat(f), tuple(de_ventas.get(i, ())), n)
+            for i, c, f, n in cabeceras
             if len(de_productos.get(i, ())) >= 2
         )
 
     def agregar_combo(self, combo: Combo) -> None:
         try:
             with self._candado, self._con:
-                self._con.execute("INSERT INTO combos VALUES (?, ?, ?)", (combo.id_combo, combo.id_cliente, combo.fecha.isoformat()))
+                self._con.execute(
+                    "INSERT INTO combos (id_combo, id_cliente, nombre_cliente, fecha) VALUES (?, ?, ?, ?)",
+                    (combo.id_combo, combo.id_cliente, combo.nombre_cliente, combo.fecha.isoformat()),
+                )
                 self._con.executemany(
                     "INSERT INTO combo_productos VALUES (?, ?, ?)",
                     [(combo.id_combo, i, orden) for orden, i in enumerate(combo.ids_productos)],
@@ -408,11 +449,20 @@ class RepositorioSQLite(Repositorio):
         if not self._ejecutar("DELETE FROM combos WHERE id_combo = ?", (id_combo,), f"el combo {id_combo}"):
             raise ErrorDatos(f"No existe el combo {id_combo}.")
 
-    def registrar_combo(self, id_combo: str, ventas: tuple[Venta, ...]) -> None:
+    def registrar_combo(self, id_combo: str, ventas: tuple[Venta, ...], cliente_nuevo: Cliente | None = None) -> None:
         try:
             with self._candado, self._con:
                 if not self._con.execute("SELECT 1 FROM combos WHERE id_combo = ?", (id_combo,)).fetchone():
                     raise ErrorDatos(f"No existe el combo {id_combo}.")
+                if cliente_nuevo is not None:
+                    self._con.execute(
+                        "INSERT INTO clientes VALUES (?, ?, ?)",
+                        (cliente_nuevo.id_cliente, cliente_nuevo.nombre, cliente_nuevo.telefono),
+                    )
+                    self._con.execute(
+                        "UPDATE combos SET id_cliente = ?, nombre_cliente = '' WHERE id_combo = ?",
+                        (cliente_nuevo.id_cliente, id_combo),
+                    )
                 self._con.executemany(
                     "INSERT INTO ventas VALUES (?, ?, ?, ?, ?, ?)",
                     [

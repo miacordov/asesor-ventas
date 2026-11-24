@@ -502,7 +502,10 @@ def combos_por_registrar(datos, pendientes, hoy) -> None:
     for combo in pendientes:
         lineas = lineas_combo(combo, datos.productos, vigentes)
         with st.container(border=True, key=f"combo_{combo.id_combo}"):
-            st.markdown(f"**Combo {combo.id_combo} · {clientes[combo.id_cliente]}** · guardado el {combo.fecha:%d/%m/%Y}")
+            cliente = clientes[combo.id_cliente] if combo.registrado else f"{combo.nombre_cliente} (no registrado)"
+            st.markdown(f"**Combo {combo.id_combo} · {cliente}** · guardado el {combo.fecha:%d/%m/%Y}")
+            if not combo.registrado:
+                st.caption("Al registrar la venta, este cliente queda registrado con su nombre (sin teléfono).")
             filas = "".join(
                 estilo.fila_producto(
                     linea.producto.nombre,
@@ -548,8 +551,10 @@ def _registrar_combo(id_combo: str, hoy) -> None:
     repo = _repo()
     try:
         motor, candado = comun.motor_y_candado()
+        previos = repo.cargar_todo()
+        antes_ids = {c.id_cliente for c in previos.clientes}
         with candado:
-            antes = acciones_por_cliente(repo.cargar_todo(), hoy, motor)
+            antes = acciones_por_cliente(previos, hoy, motor)
         ventas = admin.registrar_combo(repo, id_combo, hoy)
         datos = repo.cargar_todo()
         with candado:
@@ -560,10 +565,11 @@ def _registrar_combo(id_combo: str, hoy) -> None:
     id_cliente = ventas[0].id_cliente
     nombre = next(c.nombre for c in datos.clientes if c.id_cliente == id_cliente)
     total = round(sum(v.monto for v in ventas), 2)
+    nuevo = f" Cliente nuevo registrado: {nombre} ({id_cliente})." if id_cliente not in antes_ids else ""
     cambio = describir_cambio_agenda(nombre, antes.get(id_cliente), despues.get(id_cliente))
     comun.avisar(
         "exito",
-        f"Combo {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}. {cambio}",
+        f"Combo {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}.{nuevo} {cambio}",
     )
 
 

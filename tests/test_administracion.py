@@ -456,3 +456,29 @@ def test_descartar_un_combo_pendiente_pero_no_uno_registrado(repo):
     registrar_combo(repo, "cb002", HOY)
     with pytest.raises(ErrorDatos, match="anula sus ventas"):
         descartar_combo(repo, "cb002")
+
+
+def test_combo_para_un_cliente_no_registrado_lo_registra_al_vender(repo):
+    combo = guardar_combo(repo, None, ["p002", "p009"], HOY, nombre_cliente="  Pedro   Gómez ")
+    assert (combo.id_combo, combo.id_cliente, combo.nombre_cliente) == ("cb001", None, "Pedro Gómez")
+    n_clientes = len(repo.cargar_todo().clientes)  # 8: c001..c008
+    assert n_clientes == 8  # guardar el combo no crea el cliente
+
+    ventas = registrar_combo(repo, "cb001", HOY)
+    datos = repo.cargar_todo()
+    nuevo = datos.clientes[-1]
+    assert (nuevo.id_cliente, nuevo.nombre, nuevo.telefono) == ("c009", "Pedro Gómez", "")
+    assert {v.id_cliente for v in ventas} == {"c009"}
+    (registrado,) = repo.cargar_combos()
+    assert (registrado.id_cliente, registrado.nombre_cliente, registrado.ids_ventas) == ("c009", "", ("v031", "v032"))
+
+
+def test_combo_de_no_registrado_sin_nombre(repo):
+    with pytest.raises(ValueError, match="nombre del cliente no puede estar vacío"):
+        guardar_combo(repo, None, ["p002", "p009"], HOY, nombre_cliente="   ")
+
+
+def test_descartar_el_combo_de_un_no_registrado_no_deja_clientes_sueltos(repo):
+    guardar_combo(repo, None, ["p002", "p009"], HOY, nombre_cliente="Pedro")
+    descartar_combo(repo, "cb001")
+    assert len(repo.cargar_todo().clientes) == 8
