@@ -238,9 +238,36 @@ def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
     assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
-def test_cada_tarjeta_tiene_porque_y_mensaje():
-    etiquetas = [p.proto.popover.label for p in abrir().get("popover")]
-    assert etiquetas.count("¿Por qué?") == 6 and etiquetas.count("Mensaje") == 6
+def test_cada_tarjeta_tiene_sus_acciones_de_a_dos_por_fila():
+    at = abrir()
+    etiquetas = [p.proto.popover.label for p in at.get("popover")]
+    assert etiquetas.count("¿Por qué?") == 6 and etiquetas.count("Registrar contacto") == 6
+    assert "Mensaje" not in etiquetas  # WhatsApp ya abre el mensaje listo para revisar
+    assert [b.proto.label for b in at.get("link_button")].count("WhatsApp") == 6
+
+
+def test_sin_telefono_se_puede_ver_el_mensaje(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv("ASESOR_DB", str(tmp_path / "negocio.db"))
+    abrir()
+    con = sqlite3.connect(tmp_path / "negocio.db")
+    con.execute("UPDATE clientes SET telefono = '' WHERE id_cliente = 'c001'")
+    con.commit()
+    con.close()
+    st.cache_resource.clear()
+    at = abrir()
+    assert ok(at)
+    assert [b.proto.label for b in at.get("link_button")].count("WhatsApp") == 5
+    assert [p.proto.popover.label for p in at.get("popover")].count("Ver mensaje") == 1
+    assert any("Juan, te escribimos" in m.value or m.value.startswith("Hola Juan") for m in at.markdown)
+    assert any("no tiene teléfono" in c.value for c in at.caption)
+
+
+def test_la_leyenda_explica_la_conversion():
+    leyenda = " ".join(c.value for c in abrir().caption)
+    assert "Valor en pedidos" not in leyenda
+    assert "**Conversión (15 días):** de los clientes con contacto registrado, cuántos compraron en los 15 días siguientes." in leyenda
 
 
 def test_filtrar_la_agenda_por_tipo_de_accion():

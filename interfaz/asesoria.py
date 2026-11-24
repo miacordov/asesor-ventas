@@ -65,7 +65,7 @@ def pagina_agenda() -> None:
     st.caption(
         "**Reactivar:** compraban seguido y dejaron de venir. **Fidelizar:** clientes frecuentes y activos. "
         "**Complementar:** compran poco, se les ofrece lo que llevan otros. "
-        "**Valor en pedidos:** suma del mejor pedido de cada cliente, con su descuento. "
+        "**Conversión (15 días):** de los clientes con contacto registrado, cuántos compraron en los 15 días siguientes. "
     )
     filtro = st.segmented_control(
         "Mostrar", list(FILTROS), default="Todos", key="filtro_agenda", label_visibility="collapsed"
@@ -135,21 +135,22 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
                     on_click=_guardar_sugerido,
                     args=(t.cliente.id_cliente, t.cliente.nombre, t.pedidos[0].pedido.ids),
                 )
-        boton_whatsapp, por_que, mensaje, personalizar = st.columns([1.35, 1, 1, 1.25])
+        # Dos acciones por fila: el texto entra completo aunque las tarjetas vayan en dos columnas.
+        boton_whatsapp, contacto = st.columns(2)
+        por_que, personalizar = st.columns(2)
         if t.mensaje.enlace:
+            # WhatsApp abre el mensaje ya escrito: se revisa ahí antes de enviarlo.
             boton_whatsapp.link_button(
                 "WhatsApp", t.mensaje.enlace, type="primary", icon=":material/chat:", width="stretch"
             )
         else:
-            boton_whatsapp.button("Sin teléfono", disabled=True, width="stretch", key=f"sin_tel_{t.cliente.id_cliente}")
-        with por_que.popover("¿Por qué?", width="stretch"):
-            mostrar_por_que(t)
-        with mensaje.popover("Mensaje", width="stretch"):
-            st.write(t.mensaje.texto)
-            if not t.mensaje.enlace:
+            with boton_whatsapp.popover("Ver mensaje", icon=":material/chat:", width="stretch"):
+                st.write(t.mensaje.texto)
                 st.caption("Este cliente no tiene teléfono registrado; agrégalo en Administración › Clientes.")
-        with st.popover("Registrar contacto", icon=":material/how_to_reg:", width="stretch"):
+        with contacto.popover("Registrar contacto", icon=":material/how_to_reg:", width="stretch"):
             formulario_contacto(t)
+        with por_que.popover("¿Por qué?", icon=":material/help:", width="stretch"):
+            mostrar_por_que(t)
         if personalizar.button(
             "Personalizar",
             key=f"personalizar_{t.cliente.id_cliente}",
