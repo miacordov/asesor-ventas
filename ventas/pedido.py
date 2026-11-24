@@ -9,7 +9,7 @@ Reparto de trabajo:
 """
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from itertools import combinations
@@ -17,8 +17,10 @@ from itertools import combinations
 from ventas.funcional import PerfilCliente, precio_con_descuento
 from ventas.logico import MINIMO_PRODUCTOS, MotorPedidos
 from ventas.modelos import Cliente, Producto, Recomendacion
+from ventas.ofertas import Oferta, aplicar_ofertas
 
 MAX_CATEGORIAS = 3  # un pedido sugerido combina como máximo 3 categorías
+MAX_COMBINACIONES_MOSTRADOR = 5000  # se revisan todas para ordenar bien (ofertas y aprovechamiento)
 
 
 # ---------------------------------------------------------------------
@@ -177,13 +179,25 @@ def armar_pedido_manual(
     presupuesto: float,
     categorias: Sequence[str],
     n: int = 5,
+    vigentes: Mapping[str, Oferta] | None = None,
 ) -> tuple[Pedido, ...]:
-    """Modo mostrador: el vendedor indica presupuesto y categorías. Se muestran
-    primero los pedidos que más aprovechan el presupuesto. Con una sola
-    categoría se combinan dos productos de ella."""
-    productos = tuple(productos)
+    """Modo mostrador: el vendedor indica presupuesto y categorías. Con una sola
+    categoría se combinan dos productos de ella.
+
+    Las ofertas vigentes bajan el precio (y así caben más combinaciones) y se
+    sugieren primero: van delante los pedidos con más productos en oferta y,
+    entre ellos, los que más aprovechan el presupuesto.
+    """
+    vigentes = dict(vigentes or {})
+    productos = aplicar_ofertas(productos, vigentes)
     motor.cargar_catalogo(productos)
-    combinaciones = motor.armar_pedidos(presupuesto, categorias_para_combinar(categorias))
+    combinaciones = motor.armar_pedidos(
+        presupuesto, categorias_para_combinar(categorias), max_combinaciones=MAX_COMBINACIONES_MOSTRADOR
+    )
     por_id = {p.id_producto: p for p in productos}
     pedidos = (Pedido(tuple(por_id[i] for i in ids)) for ids in combinaciones)
-    return tuple(sorted(pedidos, key=lambda p: (-p.subtotal, p.ids))[: max(n, 0)])
+
+    def orden(pedido: Pedido) -> tuple:
+        return (-sum(i in vigentes for i in pedido.ids), -pedido.subtotal, pedido.ids)
+
+    return tuple(sorted(pedidos, key=orden)[: max(n, 0)])

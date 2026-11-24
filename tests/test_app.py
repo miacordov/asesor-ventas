@@ -267,6 +267,43 @@ def test_una_sola_categoria_combina_dos_productos_de_ella():
     assert opciones == ["**Opción 1 · S/ 165.00** · sobran S/ 35.00", "**Opción 2 · S/ 155.00** · sobran S/ 45.00"]
 
 
+def ofertar(id_producto: str, porcentaje: int) -> None:
+    """Registra una oferta vigente el 05/10/2026 en la base que usa la aplicación."""
+    from interfaz import comun
+    from ventas.ofertas import Oferta
+
+    comun.repositorio().guardar_oferta(Oferta(id_producto, porcentaje, date(2026, 10, 1), date(2026, 10, 31)))
+
+
+def test_las_ofertas_vigentes_se_sugieren_primero_en_el_pedido():
+    abrir("pedido")
+    ofertar("p002", 50)  # mouse: 45 -> 22.50
+    at = abrir("pedido")
+    opciones = [m.value for m in at.markdown if m.value.startswith("**Opción")]
+    assert opciones[:2] == ["**Opción 1 · S/ 107.50** · sobran S/ 92.50", "**Opción 2 · S/ 82.50** · sobran S/ 117.50"]
+    filas = [m.value for m in at.markdown if 'class="prod"' in m.value]
+    assert filas_de_producto(filas[0]) == [("Mouse inalámbrico", "S/ 22.50"), ("Mochila para laptop", "S/ 85.00")]
+    assert "Oferta -50 % · antes S/ 45.00" in filas[0]
+    assert any("En oferta" in m.value and "Ahorras S/ 22.50" in m.value for m in at.markdown)
+
+
+def test_una_oferta_vencida_no_cambia_el_pedido():
+    from interfaz import comun
+    from ventas.ofertas import Oferta
+
+    abrir("pedido")
+    comun.repositorio().guardar_oferta(Oferta("p002", 50, date(2026, 9, 1), date(2026, 9, 30)))
+    opciones = [m.value for m in abrir("pedido").markdown if m.value.startswith("**Opción")]
+    assert opciones[0] == "**Opción 1 · S/ 195.00** · sobran S/ 5.00"
+
+
+def test_ofertas_de_otras_categorias_se_sugieren():
+    abrir("pedido")
+    ofertar("p005", 20)  # auriculares (audio), no elegida por defecto
+    at = abrir("pedido")
+    assert any("Auriculares con micrófono (-20 %)" in i.value for i in at.info)
+
+
 def test_sin_categorias_pide_elegir_al_menos_una():
     at = abrir("pedido")
     at.get("button_group")[0].set_value([]).run()

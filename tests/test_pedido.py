@@ -10,6 +10,7 @@ from ventas.cargador import cargar_todo
 from ventas.funcional import PerfilCliente, clasificar_clientes, perfiles
 from ventas.logico import MotorLogico, MotorPedidos, PuenteProlog
 from ventas.modelos import ClienteFrecuente, ClienteRegular, Producto, Recomendacion
+from ventas.ofertas import Oferta
 from ventas.pedido import (
     Pedido,
     armar_pedido_manual,
@@ -432,3 +433,46 @@ def test_pedido_manual_si_solo_alcanza_un_producto_no_hay_combinacion(datos, mot
     assert armar_pedido_manual(motor, datos.productos, 200, ["audio"]) == ()
     # Periféricos + monitores: el monitor (520) no cabe; un periférico solo no es combinación.
     assert armar_pedido_manual(motor, datos.productos, 200, ["perifericos", "monitores"]) == ()
+
+
+# =====================================================================
+# Ofertas en el modo mostrador
+# =====================================================================
+MEDIO_PRECIO_MOUSE = {"p002": Oferta("p002", 50, date(2026, 10, 1), date(2026, 10, 31))}
+
+
+def test_las_combinaciones_con_oferta_van_primero(datos, motor):
+    # Mouse p002: 45 -> 22.50. Luego, el resto de mayor a menor valor.
+    resultado = armar_pedido_manual(
+        motor, datos.productos, 200, ["perifericos", "accesorios"], vigentes=MEDIO_PRECIO_MOUSE
+    )
+    assert [(p.ids, p.subtotal) for p in resultado] == [
+        (("p002", "p007"), 107.5),
+        (("p002", "p009"), 82.5),
+        (("p006", "p007"), 195.0),
+        (("p003", "p009"), 180.0),
+        (("p006", "p009"), 170.0),
+    ]
+
+
+def test_la_oferta_hace_caber_una_combinacion(datos, motor):
+    # Sin oferta, p002 + p009 = 105 no cabe en 100; con el mouse a 22.50 sí (82.50).
+    args = (motor, datos.productos, 100, ["perifericos", "accesorios"])
+    assert armar_pedido_manual(*args) == ()
+    assert [p.ids for p in armar_pedido_manual(*args, vigentes=MEDIO_PRECIO_MOUSE)] == [("p002", "p009")]
+
+
+def test_el_pedido_lleva_el_precio_de_oferta(datos, motor):
+    (pedido, *_) = armar_pedido_manual(
+        motor, datos.productos, 200, ["perifericos", "accesorios"], vigentes=MEDIO_PRECIO_MOUSE
+    )
+    assert [p.precio for p in pedido.productos] == [22.5, 85.0]
+
+
+def test_mas_ofertas_en_la_combinacion_la_suben_mas(datos, motor):
+    vigentes = {
+        **MEDIO_PRECIO_MOUSE,
+        "p009": Oferta("p009", 10, date(2026, 10, 1), date(2026, 10, 31)),  # hub: 60 -> 54
+    }
+    (primero, *_) = armar_pedido_manual(motor, datos.productos, 200, ["perifericos", "accesorios"], vigentes=vigentes)
+    assert primero.ids == ("p002", "p009") and primero.subtotal == 76.5
