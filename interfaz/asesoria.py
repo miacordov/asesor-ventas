@@ -63,9 +63,11 @@ def pagina_agenda() -> None:
         tarjetas = tuple(t for t in tarjetas if t.cliente.id_cliente not in en_espera)
     resumen_superior(tarjetas, conversion(contactos, datos.ventas, hoy))
     st.caption(
-        "**Reactivar:** compraban seguido y dejaron de venir. **Fidelizar:** clientes frecuentes y activos. "
-        "**Complementar:** compran poco, se les ofrece lo que llevan otros. "
-        "**Conversión (15 días):** de los clientes con contacto registrado, cuántos compraron en los 15 días siguientes. "
+        "**Reactivar:** compraban seguido y llevan más tiempo del habitual sin comprar. "
+        "**Fidelizar:** compran seguido y siguen activos. "
+        "**Complementar:** compran poco; se les ofrece lo que llevan clientes parecidos.  \n"
+        "**Conversión:** de los clientes a los que les escribiste y marcaste con «Registrar contacto», "
+        "qué parte compró en los 15 días siguientes (si escribes a 10 y compran 3, es 30 %)."
     )
     filtro = st.segmented_control(
         "Mostrar", list(FILTROS), default="Todos", key="filtro_agenda", label_visibility="collapsed"
@@ -86,15 +88,19 @@ def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...], conv) -> None:
 
     with st.container(key="fila_indicadores"):
         c = st.columns([1, 1, 1, 1, 1.5])
-    c[0].metric("Contactos", len(tarjetas), border=True)
+    c[0].metric("A contactar", len(tarjetas), border=True)
     c[1].metric("Por reactivar", cuantos("reactivar"), border=True)
     c[2].metric("Por fidelizar", cuantos("fidelizar"), border=True)
     c[3].metric("Complementar", cuantos("cruzar"), border=True)
     c[4].metric(
         "Conversión (15 días)",
-        "—" if conv.tasa is None else f"{conv.tasa:.0%}".replace("%", " %"),
+        "Sin datos aún" if conv.tasa is None else f"{conv.tasa:.0%}".replace("%", " %") + f" · {conv.compraron} de {conv.contactos}",
         border=True,
-        help=f"De {conv.contactos} contactos registrados, {conv.compraron} terminaron en una compra en los 15 días siguientes.",
+        help=(
+            "Se calcula con los contactos que registras en cada tarjeta («Registrar contacto»)."
+            if conv.tasa is None
+            else f"De {conv.contactos} contactos registrados, {conv.compraron} terminaron en una compra en los 15 días siguientes."
+        ),
     )
 
 
