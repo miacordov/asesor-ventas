@@ -1,4 +1,5 @@
 import threading
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -8,7 +9,6 @@ from ventas.cargador import Datos, ErrorDatos, cargar_todo
 from ventas.combos import Combo
 from ventas.modelos import ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
-from ventas.propuestas import LineaPropuesta, Propuesta
 from ventas.repositorio import Repositorio, RepositorioSQLite
 
 DATOS = Path(__file__).resolve().parent / "datos"
@@ -387,52 +387,68 @@ def test_una_base_existente_recibe_la_tabla_de_ofertas(tmp_path, datos):
 
 
 # =====================================================================
-# Propuestas guardadas en la agenda
+# Pedidos: estado, descuento y precios fijos
 # =====================================================================
-def propuesta(id_cliente="c001", ids=("p002", "p009"), descuento=10):
-    lineas = tuple(LineaPropuesta(i, 50.0, 40.0) for i in ids)
-    return Propuesta(id_cliente, lineas, descuento, date(2026, 10, 5))
+def test_guardar_y_leer_un_pedido_enviado(repo_con_datos):
+    enviado = Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5), descuento=15, precios=(36.0, 60.0))
+    repo_con_datos.agregar_combo(enviado)
+    assert repo_con_datos.cargar_combos() == (enviado,)
 
 
-def test_guardar_y_leer_una_propuesta(repo_con_datos):
-    repo_con_datos.guardar_propuesta(propuesta())
-    assert repo_con_datos.cargar_propuestas() == (propuesta(),)
+def test_actualizar_un_pedido(repo_con_datos):
+    borrador = Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5))
+    repo_con_datos.agregar_combo(borrador)
+    enviado = replace(borrador, descuento=5, precios=(45.0, 60.0))
+    repo_con_datos.actualizar_combo(enviado)
+    assert repo_con_datos.cargar_combos() == (enviado,)
+    descartado = replace(enviado, descartado=True)
+    repo_con_datos.actualizar_combo(descartado)
+    assert repo_con_datos.cargar_combos()[0].estado == "descartado"
+    with pytest.raises(ErrorDatos, match="No existe el combo cb999"):
+        repo_con_datos.actualizar_combo(replace(borrador, id_combo="cb999"))
 
 
-def test_guardar_otra_vez_reemplaza_la_propuesta_del_cliente(repo_con_datos):
-    repo_con_datos.guardar_propuesta(propuesta())
-    nueva = propuesta(ids=("p003", "p005", "p007"), descuento=0)
-    repo_con_datos.guardar_propuesta(nueva)
-    assert repo_con_datos.cargar_propuestas() == (nueva,)
+def test_una_base_con_propuestas_las_convierte_en_pedidos_enviados(tmp_path, datos):
+    import sqlite3
 
+    ruta = str(tmp_path / "vieja.db")
+    viejo = RepositorioSQLite(ruta)
+    viejo.reemplazar_todo(datos)
+    viejo.agregar_combo(Combo("cb001", "c002", ("p002", "p009"), date(2026, 10, 1)))
+    viejo.cerrar()
+    con = sqlite3.connect(ruta)
+    con.executescript(
+        """
+        CREATE TABLE propuestas (
+            id_cliente TEXT PRIMARY KEY REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+            descuento  INTEGER NOT NULL CHECK (descuento BETWEEN 0 AND 90),
+            fecha      TEXT NOT NULL
+        );
+        CREATE TABLE propuesta_productos (
+            id_cliente             TEXT NOT NULL REFERENCES propuestas (id_cliente) ON DELETE CASCADE,
+            id_producto            TEXT NOT NULL REFERENCES productos (id_producto) ON DELETE CASCADE,
+            orden                  INTEGER NOT NULL,
+            precio_normal_centavos INTEGER NOT NULL CHECK (precio_normal_centavos > 0),
+            precio_centavos        INTEGER NOT NULL CHECK (precio_centavos > 0),
+            PRIMARY KEY (id_cliente, id_producto)
+        );
+        INSERT INTO propuestas VALUES ('c001', 10, '2026-10-04');
+        INSERT INTO propuesta_productos VALUES ('c001', 'p009', 1, 6000, 4800), ('c001', 'p002', 0, 4500, 4500);
+        """
+    )
+    con.commit()
+    con.close()
 
-def test_eliminar_una_propuesta(repo_con_datos):
-    repo_con_datos.guardar_propuesta(propuesta())
-    repo_con_datos.eliminar_propuesta("c001")
-    assert repo_con_datos.cargar_propuestas() == ()
-    with pytest.raises(ErrorDatos, match="no tiene una propuesta"):
-        repo_con_datos.eliminar_propuesta("c001")
-
-
-def test_propuesta_de_cliente_o_producto_inexistente(repo_con_datos):
-    with pytest.raises(ErrorDatos, match="no existe"):
-        repo_con_datos.guardar_propuesta(propuesta(id_cliente="c999"))
-    with pytest.raises(ErrorDatos, match="no existe"):
-        repo_con_datos.guardar_propuesta(propuesta(ids=("p002", "p999")))
-    assert repo_con_datos.cargar_propuestas() == ()  # todo o nada
-
-
-def test_borrar_un_producto_deja_fuera_la_propuesta_que_ya_no_es_combo(repo_con_datos):
-    repo_con_datos.agregar_producto(Producto("p100", "Nuevo", "audio", 50.0))
-    repo_con_datos.guardar_propuesta(propuesta(ids=("p002", "p100")))
-    repo_con_datos.eliminar_producto("p100")
-    assert repo_con_datos.cargar_propuestas() == ()
-
-
-def test_restablecer_los_datos_borra_las_propuestas(repo_con_datos, datos):
-    repo_con_datos.guardar_propuesta(propuesta())
-    repo_con_datos.reemplazar_todo(datos)
-    assert repo_con_datos.cargar_propuestas() == ()
+    migrado = RepositorioSQLite(ruta)
+    assert migrado.cargar_combos() == (
+        Combo("cb001", "c002", ("p002", "p009"), date(2026, 10, 1)),
+        Combo("cb002", "c001", ("p002", "p009"), date(2026, 10, 4), descuento=10, precios=(45.0, 48.0)),
+    )
+    tablas = {f[0] for f in migrado._con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not tablas & {"propuestas", "propuesta_productos"}
+    assert migrado.cargar_todo() == datos
+    migrado.cerrar()
+    assert len(RepositorioSQLite(ruta).cargar_combos()) == 2  # abrirla otra vez no duplica nada
 
 
 # =====================================================================
@@ -489,7 +505,7 @@ def test_una_base_con_la_tabla_combos_vieja_se_migra_sin_perder_nada(tmp_path, d
             fecha      TEXT NOT NULL
         );
         INSERT INTO combos VALUES ('cb001', 'c001', '2026-10-05');
-        INSERT INTO combo_productos VALUES ('cb001', 'p002', 0), ('cb001', 'p009', 1);
+        INSERT INTO combo_productos (id_combo, id_producto, orden) VALUES ('cb001', 'p002', 0), ('cb001', 'p009', 1);
         INSERT INTO combo_ventas VALUES ('cb001', 'v001', 0);
         """
     )

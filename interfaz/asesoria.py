@@ -6,6 +6,7 @@ import streamlit as st
 from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
 from ventas import administracion as admin
+from ventas.combos import ESTADOS
 from ventas.contactos import RESULTADOS, conversion, pospuestos, ultimo_contacto
 from ventas.funcional import UMBRAL_FRECUENTE, VENTANA_FRECUENCIA
 from ventas.mensajes import enumerar
@@ -21,6 +22,7 @@ MOTIVOS_OFERTA = {
     "cliente_frecuente": "Compra seguido",
 }
 REGISTRADO, NO_REGISTRADO = "Registrado", "No registrado"
+CHIP_PEDIDO = {"borrador": "Pedido en borrador", "enviado": "Pedido enviado"}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
@@ -40,7 +42,7 @@ def pagina_agenda() -> None:
     vigentes = ofertas_vigentes(comun.ofertas(), hoy)
     motor, candado = comun.motor_y_candado()
     with candado:
-        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes, propuestas=comun.propuestas())
+        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes, pedidos=comun.combos())
     if not tarjetas:
         st.info(
             "Todavía no hay clientes para contactar. Registra ventas en Administración › Ventas "
@@ -106,7 +108,7 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             + estilo.chip(f"Prioridad {accion.prioridad}")
             + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular")
             + (estilo.chip("Oferta para este cliente", "ok") if t.ofertas else "")
-            + (estilo.chip("Propuesta lista para enviar", "media") if t.propuesta else ""),
+            + (estilo.chip(CHIP_PEDIDO[t.pedido.estado], "media") if t.pedido else ""),
             unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
@@ -114,10 +116,25 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
         if ultimo:
             vuelve = f" · vuelve el {ultimo.volver_el:%d/%m/%Y}" if ultimo.volver_el > ultimo.fecha else ""
             st.caption(f"Último contacto: {ultimo.fecha:%d/%m/%Y} · {ultimo.texto}{vuelve}")
-        if t.propuesta:
-            mostrar_propuesta_guardada(t)
+        if t.pedido:
+            st.markdown(
+                comun.html_cotizacion(
+                    t.cotizacion,
+                    f"Pedido {t.pedido.id_combo} · {ESTADOS[t.pedido.estado]} · guardado el {t.pedido.fecha:%d/%m/%Y}",
+                ),
+                unsafe_allow_html=True,
+            )
+            st.caption("Ajusta el descuento, márcalo como enviado o regístralo en Administración › Ventas › Pedidos abiertos.")
         else:
             mostrar_pedido_resumido(t)
+            if t.pedidos:
+                st.button(
+                    "Guardar como pedido",
+                    key=f"guardar_sugerido_{t.cliente.id_cliente}",
+                    icon=":material/add_shopping_cart:",
+                    on_click=_guardar_sugerido,
+                    args=(t.cliente.id_cliente, t.cliente.nombre, t.pedidos[0].pedido.ids),
+                )
         boton_whatsapp, por_que, mensaje, personalizar = st.columns([1.35, 1, 1, 1.25])
         if t.mensaje.enlace:
             boton_whatsapp.link_button(
@@ -134,13 +151,15 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
         with st.popover("Registrar contacto", icon=":material/how_to_reg:", width="stretch"):
             formulario_contacto(t)
         if personalizar.button(
-            "Editar propuesta" if t.propuesta else "Personalizar",
+            "Personalizar",
             key=f"personalizar_{t.cliente.id_cliente}",
             icon=":material/edit_note:",
             width="stretch",
+            help="Abre «Arma mi pedido» con este cliente elegido.",
         ):
-            st.session_state["propuesta_cliente"] = t.cliente.id_cliente
-            st.switch_page("paginas/propuesta.py")
+            st.session_state["combo_tipo"] = REGISTRADO
+            st.session_state["combo_cliente"] = t.cliente.id_cliente
+            st.switch_page("paginas/pedido.py")
 
 
 def filas_html(productos) -> str:
@@ -199,27 +218,13 @@ def _guardar_contacto(id_cliente: str, nombre: str) -> None:
     comun.avisar("exito", f"Contacto con {nombre} registrado: {contacto.texto}.{vuelta}")
 
 
-def mostrar_propuesta_guardada(t: TarjetaAgenda) -> None:
-    """El combo armado a mano reemplaza al pedido sugerido en la tarjeta."""
-    p = t.propuesta
-    por_id = {x.id_producto: x for x in comun.datos().productos}
-    filas = "".join(
-        estilo.fila_producto(
-            por_id[linea.id_producto].nombre,
-            por_id[linea.id_producto].categoria,
-            dinero(linea.precio),
-            f"Oferta · antes {dinero(linea.precio_normal)}" if linea.en_oferta else nombre_categoria(por_id[linea.id_producto].categoria),
-        )
-        for linea in p.lineas
-    )
-    if p.descuento:
-        cierre = estilo.total("Total", dinero(p.total), tachado=dinero(p.subtotal), nota=f"{p.descuento} % de descuento al combo")
-    else:
-        cierre = estilo.total("Total", dinero(p.total))
-    st.markdown(
-        f'<div class="pedido-titulo">Propuesta guardada el {p.fecha:%d/%m/%Y}</div>' + filas + cierre,
-        unsafe_allow_html=True,
-    )
+def _guardar_sugerido(id_cliente: str, nombre: str, ids: tuple[str, ...]) -> None:
+    try:
+        combo = admin.guardar_combo(comun.repositorio(), id_cliente, list(ids), comun.fecha_referencia())
+    except ValueError as error:
+        comun.avisar("error", str(error))
+        return
+    comun.avisar("exito", f"Pedido {combo.id_combo} guardado para {nombre}.")
 
 
 def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
@@ -441,7 +446,7 @@ def _guardar_combo(ids: tuple[str, ...]) -> None:
         nombre = f"{combo.nombre_cliente} (no registrado)"
     comun.avisar(
         "exito",
-        f"Combinación {combo.id_combo} guardada para {nombre}. Regístrala en Administración › Ventas › Combos por registrar.",
+        f"Combinación {combo.id_combo} guardada para {nombre}. Gestiónala en Administración › Ventas › Pedidos abiertos.",
     )
 
 

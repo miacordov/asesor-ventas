@@ -8,7 +8,7 @@ from ventas.cargador import cargar_todo
 from ventas.logico import PuenteProlog
 from ventas.modelos import ClienteFrecuente, ClienteRegular
 from ventas.ofertas import Oferta
-from ventas.propuestas import LineaPropuesta, Propuesta
+from ventas.combos import Combo
 from ventas.servicio import clientes_con_perfil, construir_tarjetas, resumen_ventas
 
 DATOS = Path(__file__).resolve().parent / "datos"
@@ -248,15 +248,14 @@ def test_sin_ofertas_la_agenda_no_cambia(datos, motor, tarjetas):
     assert construir_tarjetas(datos, HOY, motor, vigentes={}) == tarjetas
 
 
-def test_la_propuesta_guardada_reemplaza_el_mensaje_automatico(datos, motor, tarjetas):
-    guardada = Propuesta(
-        "c001", (LineaPropuesta("p005", 95.0, 76.0), LineaPropuesta("p009", 60.0, 60.0)), 5, HOY
-    )
-    nuevas = construir_tarjetas(datos, HOY, motor, propuestas=[guardada])
+def test_el_pedido_abierto_reemplaza_el_mensaje_automatico(datos, motor, tarjetas):
+    enviado = Combo("cb001", "c001", ("p005", "p009"), HOY, descuento=5, precios=(76.0, 60.0))
+    nuevas = construir_tarjetas(datos, HOY, motor, pedidos=[enviado])
     juan = next(t for t in nuevas if t.cliente.id_cliente == "c001")
-    assert juan.propuesta == guardada
+    assert juan.pedido == enviado
+    assert juan.cotizacion.total == 129.2
     assert juan.mensaje.texto == (
-        "Hola Juan, te preparamos una propuesta especial: Auriculares con micrófono (en oferta) y Hub USB-C "
+        "Hola Juan, te preparamos un pedido especial: Auriculares con micrófono (en oferta) y Hub USB-C "
         "por S/ 136.00, y con tu 5 % de descuento te queda en S/ 129.20. ¡Escríbenos si te interesa!"
     )
     # Los demás clientes no cambian.
@@ -287,3 +286,12 @@ def test_la_tarjeta_trae_los_complementos_de_lo_que_compro(tarjetas):
     # audio, mobiliario y monitores (el catálogo de prueba no tiene RAM).
     juan = tarjetas[0]
     assert [p.id_producto for p in juan.complementos] == ["p008", "p005", "p010", "p004"]
+
+
+def test_el_borrador_usa_el_descuento_del_cliente_y_los_vendidos_no_cuentan(datos, motor):
+    borrador = Combo("cb001", "c001", ("p005", "p009"), HOY)  # Juan es frecuente: 10 %
+    vendido = Combo("cb002", "c002", ("p005", "p009"), HOY, ("v900", "v901"))
+    descartado = Combo("cb003", "c007", ("p005", "p009"), HOY, descartado=True)
+    nuevas = {t.cliente.id_cliente: t for t in construir_tarjetas(datos, HOY, motor, pedidos=[borrador, vendido, descartado])}
+    assert nuevas["c001"].cotizacion.total == 139.5  # (95 + 60) - 10 %
+    assert nuevas["c002"].pedido is None and nuevas["c007"].pedido is None

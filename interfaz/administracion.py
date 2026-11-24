@@ -13,8 +13,9 @@ from interfaz import comun, estilo
 from interfaz.comun import dinero, dinero_corto, nombre_categoria, texto_stock
 from ventas import administracion as admin
 from ventas import analisis
-from ventas.combos import lineas_combo, total_combo
+from ventas.combos import DESCUENTO_MAXIMO, ESTADOS
 from ventas.funcional import UMBRAL_FRECUENTE
+from ventas.mensajes import enlace_whatsapp, mensaje_pedido
 from ventas.modelos import ClienteFrecuente
 from ventas.ofertas import ofertas_vigentes
 from ventas.servicio import (
@@ -519,74 +520,112 @@ def pagina_ventas() -> None:
     )
     datos, hoy = comun.datos(), comun.fecha_referencia()
     pendientes = [c for c in comun.combos() if c.pendiente]
-    registrar, combos, historial = st.tabs(
-        ["Registrar venta", f"Combos por registrar ({len(pendientes)})", "Historial"]
+    registrar, abiertos, historial = st.tabs(
+        ["Registrar venta", f"Pedidos abiertos ({len(pendientes)})", "Historial"]
     )
     with registrar:
         formulario_venta(datos, hoy)
-    with combos:
-        combos_por_registrar(datos, pendientes, hoy)
+    with abiertos:
+        pedidos_abiertos(datos, pendientes, hoy)
     with historial:
         historial_ventas(datos)
 
 
-def combos_por_registrar(datos, pendientes, hoy) -> None:
+def pedidos_abiertos(datos, pendientes, hoy) -> None:
     if not pendientes:
         st.info(
-            "No hay combos por registrar. Guárdalos desde Asesoría › Arma mi pedido con «Guardar combinación».",
+            "No hay pedidos abiertos. Guárdalos desde la agenda («Guardar como pedido») "
+            "o desde Asesoría › Arma mi pedido («Guardar combinación»).",
             icon=":material/shopping_cart:",
         )
         return
     if not comun.fecha_valida(datos, hoy):
         return
-    vigentes = ofertas_vigentes(comun.ofertas(), hoy)
-    clientes = {c.id_cliente: c.nombre for c in datos.clientes}
+    repo = _repo()
+    clientes = {c.id_cliente: c for c in datos.clientes}
     for combo in pendientes:
-        lineas = lineas_combo(combo, datos.productos, vigentes)
+        cotizacion = admin.cotizar_combo(repo, combo.id_combo, hoy)
+        nombre = clientes[combo.id_cliente].nombre if combo.registrado else f"{combo.nombre_cliente} (no registrado)"
         with st.container(border=True, key=f"combo_{combo.id_combo}"):
-            cliente = clientes[combo.id_cliente] if combo.registrado else f"{combo.nombre_cliente} (no registrado)"
-            st.markdown(f"**Combo {combo.id_combo} · {cliente}** · guardado el {combo.fecha:%d/%m/%Y}")
+            st.markdown(
+                f"**Pedido {combo.id_combo} · {nombre}** · {ESTADOS[combo.estado]} · guardado el {combo.fecha:%d/%m/%Y}"
+            )
             if not combo.registrado:
                 st.caption("Al registrar la venta, este cliente queda registrado con su nombre (sin teléfono).")
-            filas = "".join(
-                estilo.fila_producto(
-                    linea.producto.nombre,
-                    linea.producto.categoria,
-                    dinero(linea.precio),
-                    f"Oferta -{linea.oferta.porcentaje} % hasta el {linea.oferta.hasta:%d/%m/%Y} · antes {dinero(linea.producto.precio)}"
-                    if linea.oferta
-                    else nombre_categoria(linea.producto.categoria),
+            st.markdown(comun.html_cotizacion(cotizacion), unsafe_allow_html=True)
+            incompleto = len(cotizacion.lineas) < len(combo.ids_productos)
+            if incompleto:
+                st.warning("Este pedido tiene productos que ya no están en el catálogo: descártalo.", icon=":material/warning:")
+            if combo.estado == "borrador":
+                cliente = admin.cliente_clasificado(datos, combo.id_cliente, hoy)
+                del_cliente = round(cliente.descuento() * 100) if cliente else 0
+                st.number_input(
+                    "Descuento del pedido (%)",
+                    min_value=0,
+                    max_value=DESCUENTO_MAXIMO,
+                    value=combo.descuento,
+                    step=1,
+                    placeholder=f"El del cliente ({del_cliente} %)",
+                    key=f"descuento_{combo.id_combo}",
+                    on_change=_cambiar_descuento,
+                    args=(combo.id_combo,),
                 )
-                for linea in lineas
-            )
-            normal = round(sum(linea.producto.precio for linea in lineas), 2)
-            total = total_combo(lineas)
-            if total < normal:
-                cierre = estilo.total("Total", dinero(total), tachado=dinero(normal), nota=f"Ahorras {dinero(normal - total)} con las ofertas vigentes")
-            else:
-                cierre = estilo.total("Total", dinero(total))
-            st.markdown(filas + cierre, unsafe_allow_html=True)
-            if len(lineas) < len(combo.ids_productos):
-                st.warning("Este combo tiene productos que ya no están en el catálogo: descártalo.", icon=":material/warning:")
-            registrar, descartar = st.columns([1, 1])
-            registrar.button(
+                st.caption(f"Sin descuento manual se aplica el del cliente: {del_cliente} %.")
+            elif combo.registrado and clientes[combo.id_cliente].telefono:
+                texto = mensaje_pedido(nombre, cotizacion)
+                st.link_button(
+                    "Reenviar por WhatsApp",
+                    enlace_whatsapp(clientes[combo.id_cliente].telefono, texto),
+                    icon=":material/chat:",
+                )
+            botones = st.columns(3)
+            if combo.estado == "borrador":
+                botones[0].button(
+                    "Marcar como enviado",
+                    key=f"enviar_combo_{combo.id_combo}",
+                    icon=":material/send:",
+                    on_click=_enviar_combo,
+                    args=(combo.id_combo, nombre, hoy),
+                    disabled=incompleto,
+                    help="Fija los precios y el descuento: se cobrará lo prometido aunque venza una oferta.",
+                    width="stretch",
+                )
+            botones[1].button(
                 "Registrar venta",
                 key=f"registrar_combo_{combo.id_combo}",
                 type="primary",
                 icon=":material/add_circle:",
                 on_click=_registrar_combo,
                 args=(combo.id_combo, hoy),
-                disabled=len(lineas) < len(combo.ids_productos),
+                disabled=incompleto,
                 width="stretch",
             )
-            descartar.button(
+            botones[2].button(
                 "Descartar",
                 key=f"descartar_combo_{combo.id_combo}",
                 on_click=_descartar_combo,
                 args=(combo.id_combo,),
                 width="stretch",
             )
-    st.caption("Cada producto se registra al precio de la fecha de referencia: con su oferta si sigue vigente.")
+    st.caption(
+        "Un borrador se cobra con las ofertas de la fecha de referencia; uno enviado, con los precios que se le prometieron."
+    )
+
+
+def _cambiar_descuento(id_combo: str) -> None:
+    try:
+        admin.cambiar_descuento(_repo(), id_combo, st.session_state.get(f"descuento_{id_combo}"))
+    except ValueError as error:
+        comun.avisar("error", str(error))
+
+
+def _enviar_combo(id_combo: str, nombre: str, hoy) -> None:
+    try:
+        admin.enviar_combo(_repo(), id_combo, hoy)
+    except ValueError as error:
+        comun.avisar("error", str(error))
+    else:
+        comun.avisar("exito", f"Pedido {id_combo} enviado a {nombre}: sus precios quedan fijos.")
 
 
 def _registrar_combo(id_combo: str, hoy) -> None:
@@ -611,7 +650,7 @@ def _registrar_combo(id_combo: str, hoy) -> None:
     cambio = describir_cambio_agenda(nombre, antes.get(id_cliente), despues.get(id_cliente))
     comun.avisar(
         "exito",
-        f"Combo {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}.{nuevo} {cambio}",
+        f"Pedido {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}.{nuevo} {cambio}",
     )
 
 
@@ -621,7 +660,7 @@ def _descartar_combo(id_combo: str) -> None:
     except ValueError as error:
         comun.avisar("error", str(error))
     else:
-        comun.avisar("exito", f"Combo {id_combo} descartado.")
+        comun.avisar("exito", f"Pedido {id_combo} descartado.")
 
 
 def _registrar_venta(hoy) -> None:

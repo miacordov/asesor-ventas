@@ -20,7 +20,6 @@ from ventas.combos import Combo
 from ventas.contactos import Contacto
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
-from ventas.propuestas import LineaPropuesta, Propuesta
 
 _TABLAS = {
     "c": ("clientes", "id_cliente"),
@@ -57,19 +56,6 @@ CREATE TABLE IF NOT EXISTS ofertas (
     desde       TEXT NOT NULL,
     hasta       TEXT NOT NULL CHECK (hasta >= desde)
 );
-CREATE TABLE IF NOT EXISTS propuestas (
-    id_cliente TEXT PRIMARY KEY REFERENCES clientes (id_cliente) ON DELETE CASCADE,
-    descuento  INTEGER NOT NULL CHECK (descuento BETWEEN 0 AND 90),
-    fecha      TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS propuesta_productos (
-    id_cliente             TEXT NOT NULL REFERENCES propuestas (id_cliente) ON DELETE CASCADE,
-    id_producto            TEXT NOT NULL REFERENCES productos (id_producto) ON DELETE CASCADE,
-    orden                  INTEGER NOT NULL,
-    precio_normal_centavos INTEGER NOT NULL CHECK (precio_normal_centavos > 0),
-    precio_centavos        INTEGER NOT NULL CHECK (precio_centavos > 0),
-    PRIMARY KEY (id_cliente, id_producto)
-);
 CREATE TABLE IF NOT EXISTS contactos (
     id_contacto INTEGER PRIMARY KEY AUTOINCREMENT,
     id_cliente  TEXT NOT NULL REFERENCES clientes (id_cliente) ON DELETE CASCADE,
@@ -82,12 +68,15 @@ CREATE TABLE IF NOT EXISTS combos (
     id_cliente     TEXT REFERENCES clientes (id_cliente) ON DELETE CASCADE,
     nombre_cliente TEXT NOT NULL DEFAULT '',  -- cliente no registrado (sin id_cliente)
     fecha          TEXT NOT NULL,
+    descuento      INTEGER CHECK (descuento IS NULL OR descuento BETWEEN 0 AND 90),  -- NULL: el del cliente
+    descartado     INTEGER NOT NULL DEFAULT 0,
     CHECK ((id_cliente IS NULL) <> (nombre_cliente = ''))
 );
 CREATE TABLE IF NOT EXISTS combo_productos (
     id_combo    TEXT NOT NULL REFERENCES combos (id_combo) ON DELETE CASCADE,
     id_producto TEXT NOT NULL REFERENCES productos (id_producto) ON DELETE CASCADE,
     orden       INTEGER NOT NULL,
+    precio_centavos INTEGER CHECK (precio_centavos IS NULL OR precio_centavos > 0),  -- fijado al enviar
     PRIMARY KEY (id_combo, id_producto)
 );
 CREATE TABLE IF NOT EXISTS combo_ventas (
@@ -177,16 +166,6 @@ class Repositorio(ABC):
     def eliminar_oferta(self, id_producto: str) -> None: ...
 
     @abstractmethod
-    def cargar_propuestas(self) -> tuple[Propuesta, ...]: ...
-
-    @abstractmethod
-    def guardar_propuesta(self, propuesta: Propuesta) -> None:
-        """Guarda la propuesta del cliente o reemplaza la que tenía (una por cliente)."""
-
-    @abstractmethod
-    def eliminar_propuesta(self, id_cliente: str) -> None: ...
-
-    @abstractmethod
     def cargar_contactos(self) -> tuple[Contacto, ...]: ...
 
     @abstractmethod
@@ -197,6 +176,10 @@ class Repositorio(ABC):
 
     @abstractmethod
     def agregar_combo(self, combo: Combo) -> None: ...
+
+    @abstractmethod
+    def actualizar_combo(self, combo: Combo) -> None:
+        """Guarda el descuento, los precios fijos y si está descartado."""
 
     @abstractmethod
     def eliminar_combo(self, id_combo: str) -> None: ...
@@ -218,8 +201,55 @@ class RepositorioSQLite(Repositorio):
             self._con.executescript(_ESQUEMA)
         self._migrar_combos_sin_cliente()
         self._migrar_costo_y_stock()
+        self._migrar_pedidos()
         with self._candado, self._con:
             self._con.executescript(_DISPARADORES)
+
+    def _migrar_pedidos(self) -> None:
+        """Los combos pasan a ser pedidos con descuento, precios fijos y estado; y
+        cada propuesta guardada se convierte en un pedido enviado (con sus precios
+        y su descuento). Después se borran las tablas de propuestas."""
+        with self._candado, self._con:
+            columnas = {f[1] for f in self._con.execute("PRAGMA table_info(combos)")}
+            if "descuento" not in columnas:
+                self._con.execute(
+                    "ALTER TABLE combos ADD COLUMN descuento INTEGER CHECK (descuento IS NULL OR descuento BETWEEN 0 AND 90)"
+                )
+            if "descartado" not in columnas:
+                self._con.execute("ALTER TABLE combos ADD COLUMN descartado INTEGER NOT NULL DEFAULT 0")
+            if "precio_centavos" not in {f[1] for f in self._con.execute("PRAGMA table_info(combo_productos)")}:
+                self._con.execute(
+                    "ALTER TABLE combo_productos ADD COLUMN precio_centavos INTEGER "
+                    "CHECK (precio_centavos IS NULL OR precio_centavos > 0)"
+                )
+            tablas = {f[0] for f in self._con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            if "propuestas" not in tablas:
+                return
+            numeros = [
+                int(i[2:]) for (i,) in self._con.execute("SELECT id_combo FROM combos") if re.fullmatch(r"cb\d+", i)
+            ]
+            siguiente = max(numeros, default=0) + 1
+            for id_cliente, descuento, fecha in self._con.execute(
+                "SELECT id_cliente, descuento, fecha FROM propuestas ORDER BY fecha, id_cliente"
+            ).fetchall():
+                lineas = self._con.execute(
+                    "SELECT id_producto, precio_centavos FROM propuesta_productos WHERE id_cliente = ? ORDER BY orden",
+                    (id_cliente,),
+                ).fetchall()
+                if len(lineas) < 2:  # perdió productos: ya no era un combo
+                    continue
+                id_combo = f"cb{siguiente:03d}"
+                siguiente += 1
+                self._con.execute(
+                    "INSERT INTO combos (id_combo, id_cliente, nombre_cliente, fecha, descuento) VALUES (?, ?, '', ?, ?)",
+                    (id_combo, id_cliente, fecha, descuento),
+                )
+                self._con.executemany(
+                    "INSERT INTO combo_productos (id_combo, id_producto, orden, precio_centavos) VALUES (?, ?, ?, ?)",
+                    [(id_combo, i, orden, precio) for orden, (i, precio) in enumerate(lineas)],
+                )
+            self._con.execute("DROP TABLE IF EXISTS propuesta_productos")
+            self._con.execute("DROP TABLE propuestas")
 
     def _migrar_costo_y_stock(self) -> None:
         """Las bases anteriores no tenían costo ni stock: se agregan las columnas
@@ -319,8 +349,6 @@ class RepositorioSQLite(Repositorio):
                     "combo_ventas",
                     "combo_productos",
                     "combos",
-                    "propuesta_productos",
-                    "propuestas",
                     "ofertas",
                     "ventas",
                     "clientes",
@@ -429,46 +457,6 @@ class RepositorioSQLite(Repositorio):
         if not self._ejecutar("DELETE FROM ofertas WHERE id_producto = ?", (id_producto,), "la oferta"):
             raise ErrorDatos(f"El producto {id_producto} no tiene oferta.")
 
-    # ---------- propuestas ----------
-    def cargar_propuestas(self) -> tuple[Propuesta, ...]:
-        """Las propuestas guardadas. Si al borrar productos una quedó con menos de
-        2, ya no es un combo y no se devuelve."""
-        with self._candado:
-            cabeceras = self._con.execute("SELECT id_cliente, descuento, fecha FROM propuestas ORDER BY fecha, id_cliente").fetchall()
-            lineas = self._con.execute(
-                "SELECT id_cliente, id_producto, precio_normal_centavos, precio_centavos FROM propuesta_productos ORDER BY id_cliente, orden"
-            ).fetchall()
-        por_cliente: dict[str, list[LineaPropuesta]] = {}
-        for id_cliente, id_producto, normal, precio in lineas:
-            por_cliente.setdefault(id_cliente, []).append(LineaPropuesta(id_producto, normal / 100, precio / 100))
-        return tuple(
-            Propuesta(c, tuple(por_cliente[c]), d, date.fromisoformat(f))
-            for c, d, f in cabeceras
-            if len(por_cliente.get(c, ())) >= 2
-        )
-
-    def guardar_propuesta(self, propuesta: Propuesta) -> None:
-        try:
-            with self._candado, self._con:
-                self._con.execute("DELETE FROM propuestas WHERE id_cliente = ?", (propuesta.id_cliente,))
-                self._con.execute(
-                    "INSERT INTO propuestas VALUES (?, ?, ?)",
-                    (propuesta.id_cliente, propuesta.descuento, propuesta.fecha.isoformat()),
-                )
-                self._con.executemany(
-                    "INSERT INTO propuesta_productos VALUES (?, ?, ?, ?, ?)",
-                    [
-                        (propuesta.id_cliente, linea.id_producto, orden, _centavos(linea.precio_normal), _centavos(linea.precio))
-                        for orden, linea in enumerate(propuesta.lineas)
-                    ],
-                )
-        except sqlite3.IntegrityError as error:
-            raise ErrorDatos(_traducir(error, f"la propuesta para {propuesta.id_cliente}")) from error
-
-    def eliminar_propuesta(self, id_cliente: str) -> None:
-        if not self._ejecutar("DELETE FROM propuestas WHERE id_cliente = ?", (id_cliente,), "la propuesta"):
-            raise ErrorDatos(f"El cliente {id_cliente} no tiene una propuesta guardada.")
-
     # ---------- contactos ----------
     def cargar_contactos(self) -> tuple[Contacto, ...]:
         with self._candado:
@@ -490,19 +478,38 @@ class RepositorioSQLite(Repositorio):
         y quedó con menos de 2 ya no es un combo y no se devuelve."""
         with self._candado:
             cabeceras = self._con.execute(
-                "SELECT id_combo, id_cliente, fecha, nombre_cliente FROM combos ORDER BY id_combo"
+                "SELECT id_combo, id_cliente, fecha, nombre_cliente, descuento, descartado FROM combos ORDER BY id_combo"
             ).fetchall()
-            productos = self._con.execute("SELECT id_combo, id_producto FROM combo_productos ORDER BY id_combo, orden").fetchall()
+            productos = self._con.execute(
+                "SELECT id_combo, id_producto, precio_centavos FROM combo_productos ORDER BY id_combo, orden"
+            ).fetchall()
             ventas = self._con.execute("SELECT id_combo, id_venta FROM combo_ventas ORDER BY id_combo, orden").fetchall()
         de_productos: dict[str, list[str]] = {}
-        for id_combo, id_producto in productos:
+        de_precios: dict[str, list[int | None]] = {}
+        for id_combo, id_producto, precio in productos:
             de_productos.setdefault(id_combo, []).append(id_producto)
+            de_precios.setdefault(id_combo, []).append(precio)
+
+        def fijos(id_combo: str) -> tuple[float, ...]:
+            precios = de_precios[id_combo]
+            return () if None in precios else tuple(p / 100 for p in precios)
+
         de_ventas: dict[str, list[str]] = {}
         for id_combo, id_venta in ventas:
             de_ventas.setdefault(id_combo, []).append(id_venta)
         return tuple(
-            Combo(i, c, tuple(de_productos[i]), date.fromisoformat(f), tuple(de_ventas.get(i, ())), n)
-            for i, c, f, n in cabeceras
+            Combo(
+                i,
+                c,
+                tuple(de_productos[i]),
+                date.fromisoformat(f),
+                tuple(de_ventas.get(i, ())),
+                n,
+                descuento=d,
+                precios=fijos(i),
+                descartado=bool(x) and not de_ventas.get(i),
+            )
+            for i, c, f, n, d, x in cabeceras
             if len(de_productos.get(i, ())) >= 2
         )
 
@@ -510,12 +517,36 @@ class RepositorioSQLite(Repositorio):
         try:
             with self._candado, self._con:
                 self._con.execute(
-                    "INSERT INTO combos (id_combo, id_cliente, nombre_cliente, fecha) VALUES (?, ?, ?, ?)",
-                    (combo.id_combo, combo.id_cliente, combo.nombre_cliente, combo.fecha.isoformat()),
+                    "INSERT INTO combos (id_combo, id_cliente, nombre_cliente, fecha, descuento, descartado) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        combo.id_combo,
+                        combo.id_cliente,
+                        combo.nombre_cliente,
+                        combo.fecha.isoformat(),
+                        combo.descuento,
+                        int(combo.descartado),
+                    ),
                 )
                 self._con.executemany(
-                    "INSERT INTO combo_productos VALUES (?, ?, ?)",
-                    [(combo.id_combo, i, orden) for orden, i in enumerate(combo.ids_productos)],
+                    "INSERT INTO combo_productos (id_combo, id_producto, orden, precio_centavos) VALUES (?, ?, ?, ?)",
+                    [(combo.id_combo, i, orden, precio) for orden, (i, precio) in enumerate(_precios_fijos(combo))],
+                )
+        except sqlite3.IntegrityError as error:
+            raise ErrorDatos(_traducir(error, f"el combo {combo.id_combo}")) from error
+
+    def actualizar_combo(self, combo: Combo) -> None:
+        try:
+            with self._candado, self._con:
+                filas = self._con.execute(
+                    "UPDATE combos SET descuento = ?, descartado = ? WHERE id_combo = ?",
+                    (combo.descuento, int(combo.descartado), combo.id_combo),
+                ).rowcount
+                if not filas:
+                    raise ErrorDatos(f"No existe el combo {combo.id_combo}.")
+                self._con.executemany(
+                    "UPDATE combo_productos SET precio_centavos = ? WHERE id_combo = ? AND id_producto = ?",
+                    [(precio, combo.id_combo, i) for i, precio in _precios_fijos(combo)],
                 )
         except sqlite3.IntegrityError as error:
             raise ErrorDatos(_traducir(error, f"el combo {combo.id_combo}")) from error
@@ -562,6 +593,12 @@ class RepositorioSQLite(Repositorio):
                 f"No se puede eliminar el {nombre} {valor}: tiene {n} {'venta registrada' if n == 1 else 'ventas registradas'}."
             )
         self._ejecutar(f"DELETE FROM {tabla} WHERE {columna} = ?", (valor,), f"el {nombre} {valor}")
+
+
+def _precios_fijos(combo: Combo) -> list[tuple[str, int | None]]:
+    """(id_producto, precio fijo en centavos o None) de cada producto del pedido."""
+    precios = [_centavos(p) for p in combo.precios] or [None] * len(combo.ids_productos)
+    return list(zip(combo.ids_productos, precios, strict=True))
 
 
 def _fila_producto(p: Producto) -> tuple:

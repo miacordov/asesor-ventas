@@ -9,16 +9,24 @@ que la interfaz muestra tal cual.
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
 from ventas.cargador import ErrorDatos, cargar_todo
-from ventas.combos import Combo, lineas_combo, ventas_del_combo
+from ventas.combos import (
+    ESTADOS,
+    Combo,
+    Cotizacion,
+    congelar,
+    cotizar,
+    ventas_del_combo,
+)
 from ventas.contactos import Contacto, nuevo_contacto
+from ventas.funcional import clasificar_cliente, perfil_cliente
 from ventas.mensajes import validar_telefono
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta, ofertas_vigentes
-from ventas.propuestas import Propuesta, armar_propuesta
 from ventas.repositorio import Repositorio
 
 
@@ -195,28 +203,6 @@ def quitar_oferta(repo: Repositorio, id_producto: str) -> None:
     repo.eliminar_oferta(id_producto)
 
 
-def guardar_propuesta(
-    repo: Repositorio,
-    id_cliente: str,
-    ids_productos: list[str],
-    descuento: int,
-    hoy: date,
-    vigentes: dict[str, Oferta],
-) -> Propuesta:
-    """Guarda en la agenda el combo armado a mano, con los precios (y ofertas) de hoy."""
-    datos = repo.cargar_todo()
-    _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
-    if isinstance(descuento, float) and descuento.is_integer():
-        descuento = int(descuento)
-    propuesta = armar_propuesta(id_cliente, ids_productos, descuento, hoy, datos.productos, vigentes)
-    repo.guardar_propuesta(propuesta)
-    return propuesta
-
-
-def quitar_propuesta(repo: Repositorio, id_cliente: str) -> None:
-    repo.eliminar_propuesta(id_cliente)
-
-
 # ---------------------------------------------------------------------
 # Contactos de la agenda
 # ---------------------------------------------------------------------
@@ -234,10 +220,16 @@ def registrar_contacto(repo: Repositorio, id_cliente: str, resultado: str, hoy: 
 # Combos de «Arma mi pedido» que pasan a ventas
 # ---------------------------------------------------------------------
 def guardar_combo(
-    repo: Repositorio, id_cliente: str | None, ids_productos: list[str], hoy: date, nombre_cliente: str = ""
+    repo: Repositorio,
+    id_cliente: str | None,
+    ids_productos: list[str],
+    hoy: date,
+    nombre_cliente: str = "",
+    descuento: int | None = None,
 ) -> Combo:
-    """Guarda la combinación elegida con un id nuevo (cb001, cb002...), para un
-    cliente registrado (id_cliente) o uno no registrado (solo su nombre)."""
+    """Guarda un pedido en borrador con un id nuevo (cb001, cb002...), para un
+    cliente registrado (id_cliente) o uno no registrado (solo su nombre). Sin
+    descuento, le corresponde el del cliente."""
     datos = repo.cargar_todo()
     if id_cliente is None:
         nombre_cliente = limpiar_nombre(nombre_cliente, "nombre del cliente")
@@ -246,35 +238,95 @@ def guardar_combo(
         nombre_cliente = ""
     for id_producto in ids_productos:
         _buscar(datos.productos, "id_producto", id_producto, "producto")
-    combo = Combo(repo.siguiente_id("cb"), id_cliente, tuple(ids_productos), hoy, nombre_cliente=nombre_cliente)
+    combo = Combo(
+        repo.siguiente_id("cb"),
+        id_cliente,
+        tuple(ids_productos),
+        hoy,
+        nombre_cliente=nombre_cliente,
+        descuento=_entero_o_none(descuento),
+    )
     repo.agregar_combo(combo)
     return combo
+
+
+def _entero_o_none(valor):
+    return int(valor) if isinstance(valor, float) and valor.is_integer() else valor
 
 
 def _combo(repo: Repositorio, id_combo: str) -> Combo:
     return _buscar(repo.cargar_combos(), "id_combo", id_combo, "combo")
 
 
-def registrar_combo(repo: Repositorio, id_combo: str, fecha: date) -> tuple[Venta, ...]:
-    """Registra el combo como ventas (una por producto) al precio de `fecha`:
-    con la oferta de cada producto si sigue vigente ese día. Si el cliente no
-    estaba registrado, se registra con su nombre en la misma operación."""
+def _abierto(combo: Combo) -> Combo:
+    if not combo.pendiente:
+        raise ValueError(f"El pedido {combo.id_combo} ya está {ESTADOS[combo.estado].lower()}.")
+    return combo
+
+
+def cliente_clasificado(datos, id_cliente: str | None, fecha: date) -> Cliente | None:
+    """El cliente como regular o frecuente a esa fecha (None si no está registrado)."""
+    if id_cliente is None:
+        return None
+    cliente = _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
+    return clasificar_cliente(cliente, perfil_cliente(id_cliente, datos.ventas, datos.productos, fecha))
+
+
+def cotizar_combo(repo: Repositorio, id_combo: str, fecha: date) -> Cotizacion:
+    """Lo que sale el pedido a esa fecha, con la única regla de precio."""
     combo = _combo(repo, id_combo)
-    lineas = lineas_combo(combo, repo.cargar_todo().productos, ofertas_vigentes(repo.cargar_ofertas(), fecha))
+    datos = repo.cargar_todo()
+    vigentes = ofertas_vigentes(repo.cargar_ofertas(), fecha)
+    return cotizar(combo, datos.productos, vigentes, cliente_clasificado(datos, combo.id_cliente, fecha))
+
+
+def cambiar_descuento(repo: Repositorio, id_combo: str, descuento: int | None) -> Combo:
+    """El descuento del borrador: un % del vendedor, o None para el del cliente."""
+    combo = replace(_abierto(_combo(repo, id_combo)), descuento=_entero_o_none(descuento))
+    if combo.estado != "borrador":
+        raise ValueError(f"El pedido {id_combo} ya está enviado: su precio quedó fijo.")
+    repo.actualizar_combo(combo)
+    return combo
+
+
+def enviar_combo(repo: Repositorio, id_combo: str, fecha: date) -> Combo:
+    """Marca el pedido como enviado: precios y descuento quedan fijos (se cobrará
+    lo prometido aunque venza una oferta). Si el cliente está registrado, se
+    anota en la agenda que se le envió una propuesta."""
+    combo = _abierto(_combo(repo, id_combo))
+    if combo.estado == "enviado":
+        raise ValueError(f"El pedido {id_combo} ya está enviado.")
+    cotizacion = cotizar_combo(repo, id_combo, fecha)
+    enviado = congelar(combo, cotizacion.lineas, cotizacion.descuento)
+    repo.actualizar_combo(enviado)
+    if enviado.registrado:
+        registrar_contacto(repo, enviado.id_cliente, "propuesta_enviada", fecha)
+    return enviado
+
+
+def registrar_combo(repo: Repositorio, id_combo: str, fecha: date) -> tuple[Venta, ...]:
+    """Registra el pedido como ventas (una por producto) con la única regla de
+    precio: lo acordado si se envió; si no, las ofertas de `fecha` y el descuento
+    del pedido. Si el cliente no estaba registrado, se registra con su nombre en
+    la misma operación."""
+    combo = _combo(repo, id_combo)
+    cotizacion = cotizar_combo(repo, id_combo, fecha)
     nuevo = None if combo.registrado else ClienteRegular(repo.siguiente_id("c"), combo.nombre_cliente)
     primero = int(repo.siguiente_id("v")[1:])
-    ids_ventas = [f"v{primero + i:03d}" for i in range(len(lineas))]
-    ventas = ventas_del_combo(combo, lineas, ids_ventas, fecha, nuevo.id_cliente if nuevo else None)
-    revisar_stock((linea.producto for linea in lineas), {v.id_producto: v.cantidad for v in ventas})
+    ids_ventas = [f"v{primero + i:03d}" for i in range(len(cotizacion.lineas))]
+    ventas = ventas_del_combo(
+        combo, cotizacion.lineas, ids_ventas, fecha, nuevo.id_cliente if nuevo else None, cotizacion.descuento
+    )
+    revisar_stock((linea.producto for linea in cotizacion.lineas), {v.id_producto: v.cantidad for v in ventas})
     repo.registrar_combo(id_combo, ventas, nuevo)
     return ventas
 
 
-def descartar_combo(repo: Repositorio, id_combo: str) -> None:
-    """Quita un combo pendiente (uno ya registrado se anula desde sus ventas)."""
-    if not _combo(repo, id_combo).pendiente:
-        raise ErrorDatos(f"El combo {id_combo} ya se registró: para deshacerlo anula sus ventas.")
-    repo.eliminar_combo(id_combo)
+def descartar_combo(repo: Repositorio, id_combo: str) -> Combo:
+    """Descarta un pedido abierto (queda en el historial; uno vendido se anula desde sus ventas)."""
+    combo = replace(_abierto(_combo(repo, id_combo)), descartado=True)
+    repo.actualizar_combo(combo)
+    return combo
 
 
 def sembrar(repo: Repositorio, directorio: str | Path) -> None:

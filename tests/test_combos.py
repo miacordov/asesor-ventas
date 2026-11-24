@@ -81,3 +81,88 @@ def test_las_ventas_del_no_registrado_van_al_cliente_que_se_crea():
     with pytest.raises(ValueError, match="falta crear su cliente"):
         ventas_del_combo(combo, lineas, ["v031", "v032"], HOY)
     assert {v.id_cliente for v in ventas_del_combo(combo, lineas, ["v031", "v032"], HOY, "c009")} == {"c009"}
+
+
+# ---------------------------------------------------------------------
+# Pedido unificado: estados y una sola regla de precio
+# ---------------------------------------------------------------------
+from ventas.combos import congelar, descuento_de, total_combo_con_descuento  # noqa: E402
+from ventas.modelos import ClienteFrecuente, ClienteRegular  # noqa: E402
+
+FRECUENTE = ClienteFrecuente("c001", "Juan", "")
+REGULAR = ClienteRegular("c001", "Juan", "")
+
+
+def test_el_estado_se_deduce_de_lo_que_tiene_el_pedido():
+    borrador = Combo("cb001", "c001", ("p001", "p002"), HOY)
+    enviado = Combo("cb001", "c001", ("p001", "p002"), HOY, precios=(36.0, 60.0), descuento=10)
+    vendido = Combo("cb001", "c001", ("p001", "p002"), HOY, ("v031", "v032"), precios=(36.0, 60.0), descuento=10)
+    descartado = Combo("cb001", "c001", ("p001", "p002"), HOY, descartado=True)
+    assert [c.estado for c in (borrador, enviado, vendido, descartado)] == ["borrador", "enviado", "vendido", "descartado"]
+    assert [c.pendiente for c in (borrador, enviado, vendido, descartado)] == [True, True, False, False]
+
+
+@pytest.mark.parametrize(
+    ("cambios", "mensaje"),
+    [
+        ({"precios": (36.0,)}, "un precio por producto"),
+        ({"precios": (36.0, 0.0)}, "precio"),
+        ({"descuento": 91}, "descuento"),
+        ({"descuento": -1}, "descuento"),
+        ({"descuento": 5.5}, "descuento"),
+        ({"descartado": True, "ids_ventas": ("v031", "v032")}, "vendido"),
+    ],
+)
+def test_pedido_invalido(cambios, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        Combo("cb001", "c001", ("p001", "p002"), HOY, **cambios)
+
+
+def test_el_descuento_es_el_manual_o_el_del_cliente():
+    assert descuento_de(COMBO, FRECUENTE) == 10
+    assert descuento_de(COMBO, REGULAR) == 0
+    assert descuento_de(COMBO, None) == 0  # cliente no registrado
+    assert descuento_de(Combo("cb001", "c001", ("p001", "p002"), HOY, descuento=15), FRECUENTE) == 15
+    assert descuento_de(Combo("cb001", "c001", ("p001", "p002"), HOY, descuento=0), FRECUENTE) == 0
+
+
+def test_total_con_la_oferta_y_el_descuento():
+    lineas = lineas_combo(COMBO, PRODUCTOS, {"p001": OFERTA_MOUSE})  # 36 + 60 = 96
+    assert total_combo_con_descuento(lineas, 10) == 86.4
+
+
+def test_al_enviarlo_los_precios_y_el_descuento_quedan_fijos():
+    lineas = lineas_combo(COMBO, PRODUCTOS, {"p001": OFERTA_MOUSE})
+    enviado = congelar(COMBO, lineas, 10)
+    assert (enviado.estado, enviado.precios, enviado.descuento) == ("enviado", (36.0, 60.0), 10)
+    # aunque la oferta venza, se cobra lo que se prometió
+    fijas = lineas_combo(enviado, PRODUCTOS, {})
+    assert [linea.precio for linea in fijas] == [36.0, 60.0]
+    assert total_combo_con_descuento(fijas, enviado.descuento) == 86.4
+
+
+def test_las_ventas_reparten_el_descuento_y_suman_el_total_exacto():
+    combo = Combo("cb001", "c001", ("p001", "p002", "p003"), HOY)
+    productos = PRODUCTOS + (Producto("p003", "Cable", "accesorios", 10.0),)
+    lineas = lineas_combo(combo, productos, {})  # 45 + 60 + 10 = 115; -15 % = 97,75
+    ventas = ventas_del_combo(combo, lineas, ["v031", "v032", "v033"], HOY, descuento=15)
+    assert [v.precio_unitario for v in ventas] == [38.25, 51.0, 8.5]
+    assert round(sum(v.monto for v in ventas), 2) == 97.75
+
+
+def test_el_redondeo_lo_absorbe_la_ultima_linea():
+    combo = Combo("cb001", "c001", ("p001", "p002", "p003"), HOY)
+    productos = (
+        Producto("p001", "A", "a", 10.01),
+        Producto("p002", "B", "b", 10.01),
+        Producto("p003", "C", "c", 10.01),
+    )
+    lineas = lineas_combo(combo, productos, {})  # 30,03 con 10 % = 27,03 (27,027)
+    ventas = ventas_del_combo(combo, lineas, ["v031", "v032", "v033"], HOY, descuento=10)
+    assert round(sum(v.monto for v in ventas), 2) == total_combo_con_descuento(lineas, 10) == 27.03
+
+
+def test_no_se_vende_un_pedido_descartado():
+    descartado = Combo("cb001", "c001", ("p001", "p002"), HOY, descartado=True)
+    with pytest.raises(ValueError, match="descartado"):
+        ventas_del_combo(descartado, lineas_combo(descartado, PRODUCTOS, {}), ["v031", "v032"], HOY)

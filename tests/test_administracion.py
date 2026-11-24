@@ -6,6 +6,8 @@ import pytest
 from ventas.administracion import (
     anular_venta,
     asegurar_datos,
+    cambiar_descuento,
+    cotizar_combo,
     crear_cliente,
     crear_producto,
     descartar_combo,
@@ -13,14 +15,13 @@ from ventas.administracion import (
     editar_producto,
     eliminar_cliente,
     eliminar_producto,
+    enviar_combo,
     guardar_combo,
-    guardar_propuesta,
     limpiar_nombre,
     normalizar_categoria,
     normalizar_telefono,
     poner_oferta,
     quitar_oferta,
-    quitar_propuesta,
     registrar_combo,
     registrar_contacto,
     registrar_venta,
@@ -377,29 +378,6 @@ def test_quitar_oferta(repo):
 
 
 # =====================================================================
-# Propuestas armadas a mano
-# =====================================================================
-def test_guardar_una_propuesta_en_la_agenda(repo):
-    from ventas.ofertas import Oferta
-
-    vigentes = {"p005": Oferta("p005", 20, date(2026, 10, 1), date(2026, 10, 31))}
-    propuesta = guardar_propuesta(repo, "c001", ["p005", "p009"], 10.0, HOY, vigentes)
-    assert propuesta.descuento == 10 and propuesta.subtotal == 136.0 and propuesta.total == 122.4
-    assert repo.cargar_propuestas() == (propuesta,)
-
-
-def test_propuesta_para_un_cliente_inexistente(repo):
-    with pytest.raises(ErrorDatos, match="No existe el cliente c999"):
-        guardar_propuesta(repo, "c999", ["p005", "p009"], 0, HOY, {})
-
-
-def test_quitar_propuesta(repo):
-    guardar_propuesta(repo, "c001", ["p005", "p009"], 0, HOY, {})
-    quitar_propuesta(repo, "c001")
-    assert repo.cargar_propuestas() == ()
-
-
-# =====================================================================
 # Combos de «Arma mi pedido» → ventas
 # =====================================================================
 def test_guardar_combos_les_da_ids_correlativos(repo):
@@ -425,9 +403,10 @@ def test_registrar_un_combo_con_oferta_vigente(repo):
     guardar_combo(repo, "c001", ["p002", "p009"], HOY)
     n = len(repo.cargar_todo().ventas)  # 30 ventas: v001..v030
     ventas = registrar_combo(repo, "cb001", HOY)
+    # Juan es frecuente: a la oferta se suma su 10 %, como se le promete en la agenda.
     assert [(v.id_venta, v.id_producto, v.cantidad, v.precio_unitario, v.fecha) for v in ventas] == [
-        ("v031", "p002", 1, 36.0, HOY),
-        ("v032", "p009", 1, 60.0, HOY),
+        ("v031", "p002", 1, 32.4, HOY),
+        ("v032", "p009", 1, 54.0, HOY),
     ]
     assert len(repo.cargar_todo().ventas) == n + 2
     (combo,) = repo.cargar_combos()
@@ -439,7 +418,7 @@ def test_si_la_oferta_vencio_se_registra_al_precio_normal(repo):
 
     repo.guardar_oferta(Oferta("p002", 20, date(2026, 10, 1), date(2026, 10, 4)))
     guardar_combo(repo, "c001", ["p002", "p009"], HOY)
-    assert [v.precio_unitario for v in registrar_combo(repo, "cb001", HOY)] == [45.0, 60.0]
+    assert [v.precio_unitario for v in registrar_combo(repo, "cb001", HOY)] == [40.5, 54.0]  # sin oferta, con su 10 %
 
 
 def test_un_combo_no_se_registra_dos_veces(repo):
@@ -453,9 +432,11 @@ def test_descartar_un_combo_pendiente_pero_no_uno_registrado(repo):
     guardar_combo(repo, "c001", ["p002", "p009"], HOY)
     guardar_combo(repo, "c001", ["p003", "p007"], HOY)
     descartar_combo(repo, "cb001")
-    assert [c.id_combo for c in repo.cargar_combos()] == ["cb002"]
+    assert [(c.id_combo, c.estado) for c in repo.cargar_combos()] == [("cb001", "descartado"), ("cb002", "borrador")]
+    with pytest.raises(ValueError, match="descartado"):
+        registrar_combo(repo, "cb001", HOY)
     registrar_combo(repo, "cb002", HOY)
-    with pytest.raises(ErrorDatos, match="anula sus ventas"):
+    with pytest.raises(ValueError, match="ya está vendido"):
         descartar_combo(repo, "cb002")
 
 
@@ -544,3 +525,51 @@ def test_registrar_un_combo_sin_stock_avisa_que_producto_falta(repo):
     with pytest.raises(ValueError, match="No hay stock suficiente de Hub USB-C: quedan 0."):
         registrar_combo(repo, combo.id_combo, HOY)
     assert repo.cargar_combos()[0].pendiente
+
+
+# =====================================================================
+# Pedido unificado: descuento, envío y una sola regla de precio
+# =====================================================================
+def test_el_vendedor_puede_cambiar_el_descuento_del_borrador(repo):
+    guardar_combo(repo, "c003", ["p002", "p009"], HOY)  # Carlos es regular: 0 % salvo que se lo des
+    assert cotizar_combo(repo, "cb001", HOY).total == 105.0
+    cambiar_descuento(repo, "cb001", 20)
+    assert cotizar_combo(repo, "cb001", HOY).total == 84.0
+    cambiar_descuento(repo, "cb001", None)  # vuelve al del cliente
+    assert cotizar_combo(repo, "cb001", HOY).descuento == 0
+    with pytest.raises(ValueError, match="descuento"):
+        cambiar_descuento(repo, "cb001", 95)
+
+
+def test_enviar_fija_precios_y_descuento_y_anota_el_contacto(repo):
+    from ventas.ofertas import Oferta
+
+    repo.guardar_oferta(Oferta("p002", 20, date(2026, 10, 1), date(2026, 10, 6)))  # vence el 06/10
+    guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    enviado = enviar_combo(repo, "cb001", HOY)
+    assert (enviado.estado, enviado.precios, enviado.descuento) == ("enviado", (36.0, 60.0), 10)
+    (contacto,) = repo.cargar_contactos()
+    assert (contacto.id_cliente, contacto.resultado, contacto.fecha) == ("c001", "propuesta_enviada", HOY)
+    # una semana después la oferta venció, pero se cobra lo prometido
+    ventas = registrar_combo(repo, "cb001", date(2026, 10, 12))
+    assert [v.precio_unitario for v in ventas] == [32.4, 54.0]
+
+
+def test_un_pedido_enviado_no_cambia_de_descuento(repo):
+    guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    enviar_combo(repo, "cb001", HOY)
+    with pytest.raises(ValueError, match="ya está enviado"):
+        cambiar_descuento(repo, "cb001", 30)
+    with pytest.raises(ValueError, match="ya está enviado"):
+        enviar_combo(repo, "cb001", HOY)
+
+
+def test_enviar_el_pedido_de_un_no_registrado_no_anota_contacto(repo):
+    guardar_combo(repo, None, ["p002", "p009"], HOY, nombre_cliente="Pedro")
+    assert enviar_combo(repo, "cb001", HOY).descuento == 0
+    assert repo.cargar_contactos() == ()
+
+
+def test_guardar_un_pedido_con_descuento_manual(repo):
+    combo = guardar_combo(repo, "c001", ["p002", "p009"], HOY, descuento=0)
+    assert cotizar_combo(repo, combo.id_combo, HOY).total == 105.0  # 0 % aunque sea frecuente

@@ -14,7 +14,6 @@ from ventas.contactos import Contacto
 from ventas.logico import PuenteProlog
 from ventas.mensajes import dinero
 from ventas.ofertas import Oferta
-from ventas.propuestas import Propuesta
 from ventas.repositorio import RepositorioSQLite
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -89,9 +88,38 @@ def combos() -> tuple[Combo, ...]:
     return repositorio().cargar_combos()
 
 
-def propuestas() -> tuple[Propuesta, ...]:
-    """Las propuestas armadas a mano y guardadas en la agenda."""
-    return repositorio().cargar_propuestas()
+def html_cotizacion(cotizacion, titulo: str = "") -> str:
+    """Las líneas del pedido y su total, con la única regla de precio:
+    ofertas (o precios acordados) y el descuento del pedido."""
+    from interfaz import estilo  # estilo no depende de comun
+
+    def nota(linea) -> str:
+        if linea.oferta:
+            return (
+                f"Oferta -{linea.oferta.porcentaje} % hasta el {linea.oferta.hasta:%d/%m/%Y} · "
+                f"antes {dinero(linea.producto.precio)}"
+            )
+        if linea.precio_fijo is not None and linea.en_oferta:
+            return f"Precio acordado · antes {dinero(linea.producto.precio)}"
+        return nombre_categoria(linea.producto.categoria)
+
+    filas = "".join(
+        estilo.fila_producto(linea.producto.nombre, linea.producto.categoria, dinero(linea.precio), nota(linea))
+        for linea in cotizacion.lineas
+    )
+    normal = round(sum(linea.producto.precio for linea in cotizacion.lineas), 2)
+    if cotizacion.descuento:
+        cierre = estilo.total(
+            "Total", dinero(cotizacion.total), tachado=dinero(cotizacion.subtotal), nota=f"{cotizacion.descuento} % de descuento"
+        )
+    elif cotizacion.total < normal:
+        cierre = estilo.total(
+            "Total", dinero(cotizacion.total), tachado=dinero(normal), nota=f"Ahorras {dinero(normal - cotizacion.total)} con las ofertas"
+        )
+    else:
+        cierre = estilo.total("Total", dinero(cotizacion.total))
+    cabecera = f'<div class="pedido-titulo">{titulo}</div>' if titulo else ""
+    return cabecera + filas + cierre
 
 
 def ofertas() -> tuple[Oferta, ...]:

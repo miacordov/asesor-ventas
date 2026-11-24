@@ -16,11 +16,11 @@ from typing import Protocol
 from urllib.parse import quote
 
 from ventas.agenda import EntradaAgenda
+from ventas.combos import Cotizacion
 from ventas.funcional import PerfilCliente, clasificar_cliente
 from ventas.modelos import Cliente, Producto, Recomendacion, _validar_id, _validar_texto
 from ventas.ofertas import Oferta
 from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
-from ventas.propuestas import Propuesta
 
 # Formato internacional de WhatsApp: solo dígitos, sin "+", sin cero inicial, hasta 15.
 _PATRON_TELEFONO = re.compile(r"^[1-9]\d{7,14}$")
@@ -152,16 +152,17 @@ def redactar_mensaje(
     return " ".join(parte for parte in partes if parte)
 
 
-def mensaje_propuesta(cliente: Cliente, propuesta: Propuesta, nombres: Mapping[str, str]) -> str:
-    """Texto para WhatsApp con el combo, las ofertas y el descuento acordado."""
-    items = [f"{nombres[linea.id_producto]}{' (en oferta)' if linea.en_oferta else ''}" for linea in propuesta.lineas]
+def mensaje_pedido(nombre: str, cotizacion: Cotizacion) -> str:
+    """Texto para WhatsApp con el pedido, sus ofertas y el descuento."""
+    items = [f"{linea.producto.nombre}{' (en oferta)' if linea.en_oferta else ''}" for linea in cotizacion.lineas]
     precio = (
-        f"por {dinero(propuesta.subtotal)}, y con tu {propuesta.descuento} % de descuento te queda en {dinero(propuesta.total)}"
-        if propuesta.descuento
-        else f"por {dinero(propuesta.total)}"
+        f"por {dinero(cotizacion.subtotal)}, y con tu {cotizacion.descuento} % de descuento "
+        f"te queda en {dinero(cotizacion.total)}"
+        if cotizacion.descuento
+        else f"por {dinero(cotizacion.total)}"
     )
     return (
-        f"Hola {primer_nombre(cliente.nombre)}, te preparamos una propuesta especial: "
+        f"Hola {primer_nombre(nombre)}, te preparamos un pedido especial: "
         f"{enumerar(items)} {precio}. ¡Escríbenos si te interesa!"
     )
 
