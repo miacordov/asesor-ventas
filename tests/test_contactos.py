@@ -5,7 +5,6 @@ import pytest
 from ventas.contactos import (
     RESULTADOS,
     Contacto,
-    conversion,
     nuevo_contacto,
     pospuestos,
     ultimo_contacto,
@@ -58,22 +57,3 @@ def test_pospuestos_hasta_la_fecha_para_volver():
         nuevo_contacto("c003", date(2026, 11, 21), "interesado", dias=0),  # el último manda: hoy ya vuelve
     ]
     assert pospuestos(contactos, HOY) == {"c001"}
-
-
-def test_conversion_cuenta_quien_compro_en_los_15_dias_siguientes():
-    contactos = [
-        nuevo_contacto("c001", date(2026, 11, 1), "propuesta_enviada"),  # compró el 10/11: sí
-        nuevo_contacto("c002", date(2026, 11, 1), "interesado"),  # compró el 20/11: fuera de los 15 días
-        nuevo_contacto("c003", date(2026, 11, 1), "no_responde"),  # compró el mismo día del contacto: no cuenta
-        nuevo_contacto("c004", date(2026, 11, 20), "interesado"),  # sin compras
-        nuevo_contacto("c005", date(2026, 11, 25), "interesado"),  # posterior a hoy: no cuenta
-    ]
-    ventas = [venta(1, "c001", 10), venta(2, "c002", 20), venta(3, "c003", 1)]
-    resultado = conversion(contactos, ventas, HOY)
-    assert (resultado.contactos, resultado.compraron) == (4, 1)
-    assert resultado.tasa == 0.25
-
-
-def test_conversion_sin_contactos():
-    resultado = conversion([], [], HOY)
-    assert (resultado.contactos, resultado.compraron, resultado.tasa) == (0, 0, None)

@@ -180,11 +180,10 @@ def test_agenda_muestra_los_seis_contactos_en_orden():
 
 def test_agenda_indicadores_calculados_a_mano():
     assert indicadores(abrir()) == {
-        "Contactos": "6",
+        "A contactar": "6",
         "Por reactivar": "3",
         "Por fidelizar": "2",
         "Complementar": "1",
-        "Conversión (15 días)": "—",  # todavía no se registró ningún contacto
     }
 
 
@@ -199,7 +198,7 @@ def test_registrar_un_contacto_lo_saca_de_la_agenda_hasta_volver():
     at = registrar_contacto(abrir(), "c001", "no_responde")  # vuelve en 7 días
     assert ok(at) and "Contacto con Juan Pérez registrado: No responde. Vuelve a la agenda el 12/10/2026." in exito(at)
     assert "1. Juan Pérez" not in tarjetas(at) and len(tarjetas(at)) == 5
-    assert indicadores(at)["Contactos"] == "5"
+    assert indicadores(at)["A contactar"] == "5"
     at.toggle(key="ver_pospuestos").set_value(True).run()
     assert "Juan Pérez" in " ".join(tarjetas(at))
     assert any("Último contacto: 05/10/2026 · No responde · vuelve el 12/10/2026" in c.value for c in at.caption)
@@ -209,11 +208,6 @@ def test_con_cero_dias_el_cliente_sigue_en_la_agenda_con_su_ultimo_contacto():
     at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
     assert "1. Juan Pérez" in tarjetas(at)
     assert any("Último contacto: 05/10/2026 · Interesado" in c.value for c in at.caption)
-
-
-def test_la_conversion_cuenta_los_contactos_registrados():
-    at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
-    assert indicadores(at)["Conversión (15 días)"] == "0 %"
 
 
 def test_agenda_no_incluye_a_rosa_sin_compras():
@@ -238,9 +232,36 @@ def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
     assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
-def test_cada_tarjeta_tiene_porque_y_mensaje():
-    etiquetas = [p.proto.popover.label for p in abrir().get("popover")]
-    assert etiquetas.count("¿Por qué?") == 6 and etiquetas.count("Mensaje") == 6
+def test_cada_tarjeta_tiene_sus_acciones_de_a_dos_por_fila():
+    at = abrir()
+    etiquetas = [p.proto.popover.label for p in at.get("popover")]
+    assert etiquetas.count("¿Por qué?") == 6 and etiquetas.count("Registrar contacto") == 6
+    assert "Mensaje" not in etiquetas  # WhatsApp ya abre el mensaje listo para revisar
+    assert [b.proto.label for b in at.get("link_button")].count("WhatsApp") == 6
+
+
+def test_sin_telefono_se_puede_ver_el_mensaje(tmp_path, monkeypatch):
+    import sqlite3
+
+    monkeypatch.setenv("ASESOR_DB", str(tmp_path / "negocio.db"))
+    abrir()
+    con = sqlite3.connect(tmp_path / "negocio.db")
+    con.execute("UPDATE clientes SET telefono = '' WHERE id_cliente = 'c001'")
+    con.commit()
+    con.close()
+    st.cache_resource.clear()
+    at = abrir()
+    assert ok(at)
+    assert [b.proto.label for b in at.get("link_button")].count("WhatsApp") == 5
+    assert [p.proto.popover.label for p in at.get("popover")].count("Ver mensaje") == 1
+    assert any("Juan, te escribimos" in m.value or m.value.startswith("Hola Juan") for m in at.markdown)
+    assert any("no tiene teléfono" in c.value for c in at.caption)
+
+
+def test_la_agenda_no_muestra_la_conversion():
+    at = abrir()
+    assert "Conversión (15 días)" not in indicadores(at)
+    assert not any("onversión" in c.value or "Valor en pedidos" in c.value for c in at.caption)
 
 
 def test_filtrar_la_agenda_por_tipo_de_accion():
