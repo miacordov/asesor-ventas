@@ -21,14 +21,21 @@ MINIMO_PRODUCTOS = 2
 @dataclass(frozen=True)
 class Combo:
     id_combo: str
-    id_cliente: str
+    id_cliente: str | None  # None: cliente no registrado (ver nombre_cliente)
     ids_productos: tuple[str, ...]
     fecha: date  # cuándo se guardó
     ids_ventas: tuple[str, ...] = ()  # ventas con que se registró (vacío: pendiente)
+    nombre_cliente: str = ""  # solo para clientes no registrados
 
     def __post_init__(self) -> None:
         _validar_id(self.id_combo, "id_combo")
-        _validar_id(self.id_cliente, "id_cliente")
+        if self.id_cliente is None:
+            if not isinstance(self.nombre_cliente, str) or not self.nombre_cliente.strip():
+                raise ValueError("Indica el cliente registrado o el nombre del cliente no registrado.")
+        else:
+            _validar_id(self.id_cliente, "id_cliente")
+            if self.nombre_cliente:
+                raise ValueError("Un combo es de un cliente registrado o de uno no registrado, no de ambos.")
         for id_producto in self.ids_productos:
             _validar_id(id_producto, "id_producto")
         if len(set(self.ids_productos)) != len(self.ids_productos):
@@ -41,6 +48,11 @@ class Combo:
     @property
     def pendiente(self) -> bool:
         return not self.ids_ventas
+
+    @property
+    def registrado(self) -> bool:
+        """¿El cliente ya está registrado?"""
+        return self.id_cliente is not None
 
 
 @dataclass(frozen=True)
@@ -64,9 +76,18 @@ def total_combo(lineas: Iterable[LineaCombo]) -> float:
 
 
 def ventas_del_combo(
-    combo: Combo, lineas: Sequence[LineaCombo], ids_ventas: Sequence[str], fecha: date
+    combo: Combo,
+    lineas: Sequence[LineaCombo],
+    ids_ventas: Sequence[str],
+    fecha: date,
+    id_cliente: str | None = None,
 ) -> tuple[Venta, ...]:
-    """Una venta (cantidad 1) por producto, al precio del día: con oferta si sigue vigente."""
+    """Una venta (cantidad 1) por producto, al precio del día: con oferta si sigue
+    vigente. Para un cliente no registrado, `id_cliente` es el del cliente que se
+    crea al registrar la venta."""
+    id_cliente = combo.id_cliente or id_cliente
+    if id_cliente is None:
+        raise ValueError(f"El combo {combo.id_combo} es de un cliente no registrado: falta crear su cliente.")
     if not combo.pendiente:
         raise ValueError(f"El combo {combo.id_combo} ya se registró.")
     if len(lineas) != len(combo.ids_productos):
@@ -74,6 +95,6 @@ def ventas_del_combo(
     if len(ids_ventas) != len(lineas):
         raise ValueError("Se necesita un número de venta por producto.")
     return tuple(
-        Venta(id_venta, combo.id_cliente, linea.producto.id_producto, 1, linea.precio, fecha)
+        Venta(id_venta, id_cliente, linea.producto.id_producto, 1, linea.precio, fecha)
         for id_venta, linea in zip(ids_ventas, lineas, strict=True)
     )

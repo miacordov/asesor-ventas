@@ -56,3 +56,28 @@ def test_combo_con_un_producto_borrado_no_se_registra():
 def test_combo_invalido(ids, mensaje):
     with pytest.raises(ValueError, match=mensaje):
         Combo("cb001", "c001", ids, HOY)
+
+
+# ---------------------------------------------------------------------
+# Clientes no registrados
+# ---------------------------------------------------------------------
+def test_combo_de_cliente_no_registrado():
+    combo = Combo("cb001", None, ("p001", "p002"), HOY, nombre_cliente="Pedro Gómez")
+    assert not combo.registrado and combo.pendiente
+
+
+@pytest.mark.parametrize(
+    ("id_cliente", "nombre", "mensaje"),
+    [(None, "", "nombre del cliente no registrado"), (None, "   ", "nombre del cliente no registrado"), ("c001", "Pedro", "no de ambos")],
+)
+def test_combo_sin_cliente_o_con_ambos(id_cliente, nombre, mensaje):
+    with pytest.raises(ValueError, match=mensaje):
+        Combo("cb001", id_cliente, ("p001", "p002"), HOY, nombre_cliente=nombre)
+
+
+def test_las_ventas_del_no_registrado_van_al_cliente_que_se_crea():
+    combo = Combo("cb001", None, ("p001", "p002"), HOY, nombre_cliente="Pedro Gómez")
+    lineas = lineas_combo(combo, PRODUCTOS, {})
+    with pytest.raises(ValueError, match="falta crear su cliente"):
+        ventas_del_combo(combo, lineas, ["v031", "v032"], HOY)
+    assert {v.id_cliente for v in ventas_del_combo(combo, lineas, ["v031", "v032"], HOY, "c009")} == {"c009"}

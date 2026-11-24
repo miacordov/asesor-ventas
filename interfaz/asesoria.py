@@ -19,6 +19,7 @@ MOTIVOS_OFERTA = {
     "categoria_habitual": "Es de una categoría que suele comprar",
     "cliente_frecuente": "Compra seguido",
 }
+REGISTRADO, NO_REGISTRADO = "Registrado", "No registrado"
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
@@ -272,15 +273,25 @@ def pagina_pedido() -> None:
                 "(con una sola categoría, dos de ella), sin repetir y sin pasarse del presupuesto."
             )
         with st.container(border=True, key="panel_cliente_combo"):
-            clientes = {c.id_cliente: c.nombre for c in datos.clientes}
-            st.selectbox(
-                "Cliente",
-                sorted(clientes, key=clientes.get),
-                index=None,
-                format_func=clientes.get,
-                placeholder="Elige para quién es el combo",
-                key="combo_cliente",
+            tipo = st.segmented_control(
+                "Cliente", [REGISTRADO, NO_REGISTRADO], default=REGISTRADO, key="combo_tipo"
             )
+            if tipo == NO_REGISTRADO:
+                st.text_input(
+                    "Nombre del cliente", placeholder="Ej.: Pedro Gómez", key="combo_nombre", label_visibility="collapsed"
+                )
+                st.caption("Se registra como cliente al registrar la venta del combo.")
+            else:
+                clientes = {c.id_cliente: c.nombre for c in datos.clientes}
+                st.selectbox(
+                    "Cliente registrado",
+                    sorted(clientes, key=clientes.get),
+                    index=None,
+                    format_func=clientes.get,
+                    placeholder="Elige para quién es el combo",
+                    key="combo_cliente",
+                    label_visibility="collapsed",
+                )
             st.caption("Con «Guardar combinación» el combo pasa a Administración › Ventas para registrarlo.")
     with derecha:
         if not elegidas:
@@ -324,22 +335,35 @@ def pagina_pedido() -> None:
                     icon=":material/add_shopping_cart:",
                     on_click=_guardar_combo,
                     args=(pedido.ids,),
-                    disabled=st.session_state.get("combo_cliente") is None,
-                    help="Primero elige el cliente a la izquierda.",
+                    disabled=cliente_del_combo() is None,
+                    help="Primero elige el cliente (o escribe su nombre) a la izquierda.",
                 )
 
 
-def _guardar_combo(ids: tuple[str, ...]) -> None:
+def cliente_del_combo() -> tuple[str | None, str] | None:
+    """(id_cliente, nombre_no_registrado) elegido en el panel, o None si falta."""
+    if st.session_state.get("combo_tipo") == NO_REGISTRADO:
+        nombre = " ".join(str(st.session_state.get("combo_nombre", "")).split())
+        return (None, nombre) if nombre else None
     id_cliente = st.session_state.get("combo_cliente")
-    if id_cliente is None:
-        comun.avisar("error", "Elige el cliente antes de guardar la combinación.")
+    return (id_cliente, "") if id_cliente else None
+
+
+def _guardar_combo(ids: tuple[str, ...]) -> None:
+    elegido = cliente_del_combo()
+    if elegido is None:
+        comun.avisar("error", "Elige el cliente o escribe su nombre antes de guardar la combinación.")
         return
+    id_cliente, nombre_libre = elegido
     try:
-        combo = admin.guardar_combo(comun.repositorio(), id_cliente, list(ids), comun.fecha_referencia())
+        combo = admin.guardar_combo(comun.repositorio(), id_cliente, list(ids), comun.fecha_referencia(), nombre_libre)
     except ValueError as error:
         comun.avisar("error", str(error))
         return
-    nombre = next(c.nombre for c in comun.datos().clientes if c.id_cliente == id_cliente)
+    if combo.registrado:
+        nombre = next(c.nombre for c in comun.datos().clientes if c.id_cliente == id_cliente)
+    else:
+        nombre = f"{combo.nombre_cliente} (no registrado)"
     comun.avisar(
         "exito",
         f"Combinación {combo.id_combo} guardada para {nombre}. Regístrala en Administración › Ventas › Combos por registrar.",

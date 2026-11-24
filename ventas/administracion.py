@@ -170,13 +170,20 @@ def quitar_propuesta(repo: Repositorio, id_cliente: str) -> None:
 # ---------------------------------------------------------------------
 # Combos de «Arma mi pedido» que pasan a ventas
 # ---------------------------------------------------------------------
-def guardar_combo(repo: Repositorio, id_cliente: str, ids_productos: list[str], hoy: date) -> Combo:
-    """Guarda la combinación elegida para el cliente con un id nuevo (cb001, cb002...)."""
+def guardar_combo(
+    repo: Repositorio, id_cliente: str | None, ids_productos: list[str], hoy: date, nombre_cliente: str = ""
+) -> Combo:
+    """Guarda la combinación elegida con un id nuevo (cb001, cb002...), para un
+    cliente registrado (id_cliente) o uno no registrado (solo su nombre)."""
     datos = repo.cargar_todo()
-    _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
+    if id_cliente is None:
+        nombre_cliente = limpiar_nombre(nombre_cliente, "nombre del cliente")
+    else:
+        _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
+        nombre_cliente = ""
     for id_producto in ids_productos:
         _buscar(datos.productos, "id_producto", id_producto, "producto")
-    combo = Combo(repo.siguiente_id("cb"), id_cliente, tuple(ids_productos), hoy)
+    combo = Combo(repo.siguiente_id("cb"), id_cliente, tuple(ids_productos), hoy, nombre_cliente=nombre_cliente)
     repo.agregar_combo(combo)
     return combo
 
@@ -187,13 +194,15 @@ def _combo(repo: Repositorio, id_combo: str) -> Combo:
 
 def registrar_combo(repo: Repositorio, id_combo: str, fecha: date) -> tuple[Venta, ...]:
     """Registra el combo como ventas (una por producto) al precio de `fecha`:
-    con la oferta de cada producto si sigue vigente ese día."""
+    con la oferta de cada producto si sigue vigente ese día. Si el cliente no
+    estaba registrado, se registra con su nombre en la misma operación."""
     combo = _combo(repo, id_combo)
     lineas = lineas_combo(combo, repo.cargar_todo().productos, ofertas_vigentes(repo.cargar_ofertas(), fecha))
+    nuevo = None if combo.registrado else ClienteRegular(repo.siguiente_id("c"), combo.nombre_cliente)
     primero = int(repo.siguiente_id("v")[1:])
     ids_ventas = [f"v{primero + i:03d}" for i in range(len(lineas))]
-    ventas = ventas_del_combo(combo, lineas, ids_ventas, fecha)
-    repo.registrar_combo(id_combo, ventas)
+    ventas = ventas_del_combo(combo, lineas, ids_ventas, fecha, nuevo.id_cliente if nuevo else None)
+    repo.registrar_combo(id_combo, ventas, nuevo)
     return ventas
 
 

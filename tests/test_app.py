@@ -371,6 +371,23 @@ def test_descartar_un_combo_pendiente():
     assert any("No hay combos por registrar" in i.value for i in at.info)
 
 
+def test_combo_para_un_cliente_no_registrado():
+    at = abrir("pedido")
+    at.get("button_group")[1].set_value("No registrado").run()  # [0] son las categorías
+    assert at.button(key="guardar_combo_1").disabled
+    at.text_input(key="combo_nombre").set_value("  Pedro   Gómez ").run()
+    at.button(key="guardar_combo_1").click().run()
+    assert ok(at) and "Combinación cb001 guardada para Pedro Gómez (no registrado)." in exito(at)[0]
+
+    at.switch_page("paginas/registro_ventas.py").run()
+    assert "**Combo cb001 · Pedro Gómez (no registrado)** · guardado el 05/10/2026" in [m.value for m in at.markdown]
+    at.button(key="registrar_combo_cb001").click().run()
+    assert ok(at)
+    assert "Cliente nuevo registrado: Pedro Gómez (c009)." in exito(at)[0]
+    at.switch_page("paginas/clientes.py").run()
+    assert "Pedro Gómez" in list(tabla(at)["Cliente"])
+
+
 def test_sin_categorias_pide_elegir_al_menos_una():
     at = abrir("pedido")
     at.get("button_group")[0].set_value([]).run()
