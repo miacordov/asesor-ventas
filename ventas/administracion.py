@@ -13,6 +13,7 @@ from pathlib import Path
 
 from ventas.cargador import ErrorDatos, cargar_todo
 from ventas.combos import Combo, lineas_combo, ventas_del_combo
+from ventas.contactos import Contacto, nuevo_contacto
 from ventas.mensajes import validar_telefono
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta, ofertas_vigentes
@@ -165,6 +166,19 @@ def guardar_propuesta(
 
 def quitar_propuesta(repo: Repositorio, id_cliente: str) -> None:
     repo.eliminar_propuesta(id_cliente)
+
+
+# ---------------------------------------------------------------------
+# Contactos de la agenda
+# ---------------------------------------------------------------------
+def registrar_contacto(repo: Repositorio, id_cliente: str, resultado: str, hoy: date, dias: int | None = None) -> Contacto:
+    """Anota que se contactó al cliente hoy y cuándo volver a mostrarlo en la agenda."""
+    _buscar(repo.cargar_todo().clientes, "id_cliente", id_cliente, "cliente")
+    if isinstance(dias, float) and dias.is_integer():
+        dias = int(dias)
+    contacto = nuevo_contacto(id_cliente, hoy, resultado, dias)
+    repo.agregar_contacto(contacto)
+    return contacto
 
 
 # ---------------------------------------------------------------------

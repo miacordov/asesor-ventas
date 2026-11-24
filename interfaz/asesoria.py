@@ -6,6 +6,7 @@ import streamlit as st
 from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
 from ventas import administracion as admin
+from ventas.contactos import RESULTADOS, conversion, pospuestos, ultimo_contacto
 from ventas.funcional import UMBRAL_FRECUENTE
 from ventas.logico import DIAS_INACTIVIDAD
 from ventas.modelos import ClienteFrecuente
@@ -48,7 +49,17 @@ def pagina_agenda() -> None:
         )
         return
 
-    resumen_superior(tarjetas)
+    contactos = comun.contactos()
+    en_espera = pospuestos(contactos, hoy) & {t.cliente.id_cliente for t in tarjetas}
+    if en_espera:
+        st.toggle(
+            f"Mostrar también los pospuestos ({len(en_espera)})",
+            key="ver_pospuestos",
+            help="Clientes que contactaste y pediste volver a mostrar más adelante.",
+        )
+    if not st.session_state.get("ver_pospuestos"):
+        tarjetas = tuple(t for t in tarjetas if t.cliente.id_cliente not in en_espera)
+    resumen_superior(tarjetas, conversion(contactos, datos.ventas, hoy))
     st.caption(
         "**Reactivar:** compraban seguido y dejaron de venir. **Fidelizar:** clientes frecuentes y activos. "
         "**Complementar:** compran poco, se les ofrece lo que llevan otros. "
@@ -67,11 +78,10 @@ def pagina_agenda() -> None:
                     tarjeta(posicion, tarjeta_)
 
 
-def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
+def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...], conv) -> None:
     def cuantos(tipo: str) -> int:
         return sum(t.entrada.accion.tipo == tipo for t in tarjetas)
 
-    potencial = sum(t.pedidos[0].total_con_descuento for t in tarjetas if t.pedidos)
     with st.container(key="fila_indicadores"):
         c = st.columns([1, 1, 1, 1, 1.5])
     c[0].metric("Contactos", len(tarjetas), border=True)
@@ -79,9 +89,10 @@ def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
     c[2].metric("Por fidelizar", cuantos("fidelizar"), border=True)
     c[3].metric("Complementar", cuantos("cruzar"), border=True)
     c[4].metric(
-        "Valor en pedidos sugeridos",
-        dinero(potencial),
+        "Conversión (15 días)",
+        "—" if conv.tasa is None else f"{conv.tasa:.0%}".replace("%", " %"),
         border=True,
+        help=f"De {conv.contactos} contactos registrados, {conv.compraron} terminaron en una compra en los 15 días siguientes.",
     )
 
 
@@ -99,6 +110,10 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
+        ultimo = ultimo_contacto(comun.contactos(), t.cliente.id_cliente)
+        if ultimo:
+            vuelve = f" · vuelve el {ultimo.volver_el:%d/%m/%Y}" if ultimo.volver_el > ultimo.fecha else ""
+            st.caption(f"Último contacto: {ultimo.fecha:%d/%m/%Y} · {ultimo.texto}{vuelve}")
         if t.propuesta:
             mostrar_propuesta_guardada(t)
         else:
@@ -116,6 +131,8 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             st.write(t.mensaje.texto)
             if not t.mensaje.enlace:
                 st.caption("Este cliente no tiene teléfono registrado; agrégalo en Administración › Clientes.")
+        with st.popover("Registrar contacto", icon=":material/how_to_reg:", width="stretch"):
+            formulario_contacto(t)
         if personalizar.button(
             "Editar propuesta" if t.propuesta else "Personalizar",
             key=f"personalizar_{t.cliente.id_cliente}",
@@ -144,6 +161,42 @@ def filas_sugerido_html(sugerido) -> str:
         )
         for p in sugerido.pedido.productos
     )
+
+
+def formulario_contacto(t: TarjetaAgenda) -> None:
+    id_cliente = t.cliente.id_cliente
+    resultado = st.radio(
+        "¿Cómo te fue?", list(RESULTADOS), format_func=lambda r: RESULTADOS[r][0], key=f"resultado_{id_cliente}"
+    )
+    st.number_input(
+        "Volver a mostrar en (días)",
+        min_value=0,
+        max_value=365,
+        value=RESULTADOS[resultado][1],
+        step=1,
+        key=f"dias_{id_cliente}_{resultado}",
+    )
+    st.button(
+        "Guardar contacto",
+        key=f"guardar_contacto_{id_cliente}",
+        type="primary",
+        on_click=_guardar_contacto,
+        args=(id_cliente, t.cliente.nombre),
+    )
+
+
+def _guardar_contacto(id_cliente: str, nombre: str) -> None:
+    resultado = st.session_state[f"resultado_{id_cliente}"]
+    dias = st.session_state.get(f"dias_{id_cliente}_{resultado}")
+    try:
+        contacto = admin.registrar_contacto(comun.repositorio(), id_cliente, resultado, comun.fecha_referencia(), dias)
+    except ValueError as error:
+        comun.avisar("error", str(error))
+        return
+    vuelta = (
+        f" Vuelve a la agenda el {contacto.volver_el:%d/%m/%Y}." if contacto.volver_el > contacto.fecha else ""
+    )
+    comun.avisar("exito", f"Contacto con {nombre} registrado: {contacto.texto}.{vuelta}")
 
 
 def mostrar_propuesta_guardada(t: TarjetaAgenda) -> None:

@@ -183,8 +183,36 @@ def test_agenda_indicadores_calculados_a_mano():
         "Por reactivar": "2",
         "Por fidelizar": "3",
         "Complementar": "2",
-        "Valor en pedidos sugeridos": "S/ 1,476.00",  # 607.50+261+382.50+225 (Ana, Lucía y Carlos sin combinación)
+        "Conversión (15 días)": "—",  # todavía no se registró ningún contacto
     }
+
+
+def registrar_contacto(at: AppTest, id_cliente: str, resultado: str, dias: int | None = None) -> AppTest:
+    at.radio(key=f"resultado_{id_cliente}").set_value(resultado).run()
+    if dias is not None:
+        at.number_input(key=f"dias_{id_cliente}_{resultado}").set_value(dias).run()
+    return at.button(key=f"guardar_contacto_{id_cliente}").click().run()
+
+
+def test_registrar_un_contacto_lo_saca_de_la_agenda_hasta_volver():
+    at = registrar_contacto(abrir(), "c001", "no_responde")  # vuelve en 7 días
+    assert ok(at) and "Contacto con Juan Pérez registrado: No responde. Vuelve a la agenda el 12/10/2026." in exito(at)
+    assert "1. Juan Pérez" not in tarjetas(at) and len(tarjetas(at)) == 6
+    assert indicadores(at)["Contactos"] == "6"
+    at.toggle(key="ver_pospuestos").set_value(True).run()
+    assert "Juan Pérez" in " ".join(tarjetas(at))
+    assert any("Último contacto: 05/10/2026 · No responde · vuelve el 12/10/2026" in c.value for c in at.caption)
+
+
+def test_con_cero_dias_el_cliente_sigue_en_la_agenda_con_su_ultimo_contacto():
+    at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
+    assert "1. Juan Pérez" in tarjetas(at)
+    assert any("Último contacto: 05/10/2026 · Interesado" in c.value for c in at.caption)
+
+
+def test_la_conversion_cuenta_los_contactos_registrados():
+    at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
+    assert indicadores(at)["Conversión (15 días)"] == "0 %"
 
 
 def test_agenda_no_incluye_a_rosa_sin_compras():

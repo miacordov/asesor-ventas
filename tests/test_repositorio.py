@@ -508,3 +508,31 @@ def test_una_base_con_la_tabla_combos_vieja_se_migra_sin_perder_nada(tmp_path, d
     otra_vez = RepositorioSQLite(ruta)
     assert [c.id_combo for c in otra_vez.cargar_combos()] == ["cb001", "cb002"]
     otra_vez.cerrar()
+
+
+# =====================================================================
+# Contactos de la agenda
+# =====================================================================
+def test_guardar_y_leer_contactos_en_orden(repo_con_datos):
+    from ventas.contactos import nuevo_contacto
+
+    primero = nuevo_contacto("c001", date(2026, 11, 1), "no_responde")
+    segundo = nuevo_contacto("c001", date(2026, 11, 8), "interesado")
+    repo_con_datos.agregar_contacto(primero)
+    repo_con_datos.agregar_contacto(segundo)
+    assert repo_con_datos.cargar_contactos() == (primero, segundo)
+
+
+def test_contacto_de_un_cliente_inexistente(repo_con_datos):
+    from ventas.contactos import nuevo_contacto
+
+    with pytest.raises(ErrorDatos, match="no existe"):
+        repo_con_datos.agregar_contacto(nuevo_contacto("c999", date(2026, 11, 1), "interesado"))
+
+
+def test_restablecer_los_datos_borra_los_contactos(repo_con_datos, datos):
+    from ventas.contactos import nuevo_contacto
+
+    repo_con_datos.agregar_contacto(nuevo_contacto("c001", date(2026, 11, 1), "interesado"))
+    repo_con_datos.reemplazar_todo(datos)
+    assert repo_con_datos.cargar_contactos() == ()

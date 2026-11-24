@@ -16,6 +16,7 @@ from datetime import date
 
 from ventas.cargador import Datos, ErrorDatos
 from ventas.combos import Combo
+from ventas.contactos import Contacto
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
 from ventas.propuestas import LineaPropuesta, Propuesta
@@ -65,6 +66,13 @@ CREATE TABLE IF NOT EXISTS propuesta_productos (
     precio_normal_centavos INTEGER NOT NULL CHECK (precio_normal_centavos > 0),
     precio_centavos        INTEGER NOT NULL CHECK (precio_centavos > 0),
     PRIMARY KEY (id_cliente, id_producto)
+);
+CREATE TABLE IF NOT EXISTS contactos (
+    id_contacto INTEGER PRIMARY KEY AUTOINCREMENT,
+    id_cliente  TEXT NOT NULL REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+    fecha       TEXT NOT NULL,
+    resultado   TEXT NOT NULL,
+    volver_el   TEXT NOT NULL CHECK (volver_el >= fecha)
 );
 CREATE TABLE IF NOT EXISTS combos (
     id_combo       TEXT PRIMARY KEY,
@@ -150,6 +158,12 @@ class Repositorio(ABC):
 
     @abstractmethod
     def eliminar_propuesta(self, id_cliente: str) -> None: ...
+
+    @abstractmethod
+    def cargar_contactos(self) -> tuple[Contacto, ...]: ...
+
+    @abstractmethod
+    def agregar_contacto(self, contacto: Contacto) -> None: ...
 
     @abstractmethod
     def cargar_combos(self) -> tuple[Combo, ...]: ...
@@ -257,6 +271,7 @@ class RepositorioSQLite(Repositorio):
         try:
             with self._candado, self._con:
                 for tabla in (
+                    "contactos",
                     "combo_ventas",
                     "combo_productos",
                     "combos",
@@ -408,6 +423,21 @@ class RepositorioSQLite(Repositorio):
     def eliminar_propuesta(self, id_cliente: str) -> None:
         if not self._ejecutar("DELETE FROM propuestas WHERE id_cliente = ?", (id_cliente,), "la propuesta"):
             raise ErrorDatos(f"El cliente {id_cliente} no tiene una propuesta guardada.")
+
+    # ---------- contactos ----------
+    def cargar_contactos(self) -> tuple[Contacto, ...]:
+        with self._candado:
+            filas = self._con.execute(
+                "SELECT id_cliente, fecha, resultado, volver_el FROM contactos ORDER BY fecha, id_contacto"
+            ).fetchall()
+        return tuple(Contacto(c, date.fromisoformat(f), r, date.fromisoformat(v)) for c, f, r, v in filas)
+
+    def agregar_contacto(self, contacto: Contacto) -> None:
+        self._ejecutar(
+            "INSERT INTO contactos (id_cliente, fecha, resultado, volver_el) VALUES (?, ?, ?, ?)",
+            (contacto.id_cliente, contacto.fecha.isoformat(), contacto.resultado, contacto.volver_el.isoformat()),
+            f"el contacto con {contacto.id_cliente}",
+        )
 
     # ---------- combos ----------
     def cargar_combos(self) -> tuple[Combo, ...]:

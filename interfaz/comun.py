@@ -10,6 +10,7 @@ import streamlit as st
 from ventas.administracion import asegurar_datos
 from ventas.cargador import Datos
 from ventas.combos import Combo
+from ventas.contactos import Contacto
 from ventas.logico import PuenteProlog
 from ventas.mensajes import dinero
 from ventas.ofertas import Oferta
@@ -69,6 +70,11 @@ def motor_y_candado() -> tuple[PuenteProlog, threading.Lock]:
 def datos() -> Datos:
     """Lo último que hay en la base (se lee en cada ejecución: es pequeño y siempre está al día)."""
     return repositorio().cargar_todo()
+
+
+def contactos() -> tuple[Contacto, ...]:
+    """Los contactos registrados desde la agenda."""
+    return repositorio().cargar_contactos()
 
 
 def combos() -> tuple[Combo, ...]:

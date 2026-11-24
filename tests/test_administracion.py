@@ -22,6 +22,7 @@ from ventas.administracion import (
     quitar_oferta,
     quitar_propuesta,
     registrar_combo,
+    registrar_contacto,
     registrar_venta,
     sembrar,
 )
@@ -482,3 +483,16 @@ def test_descartar_el_combo_de_un_no_registrado_no_deja_clientes_sueltos(repo):
     guardar_combo(repo, None, ["p002", "p009"], HOY, nombre_cliente="Pedro")
     descartar_combo(repo, "cb001")
     assert len(repo.cargar_todo().clientes) == 8
+
+
+# =====================================================================
+# Contactos de la agenda
+# =====================================================================
+def test_registrar_contacto(repo):
+    contacto = registrar_contacto(repo, "c001", "no_responde", HOY)
+    assert (contacto.volver_el, repo.cargar_contactos()) == (date(2026, 10, 12), (contacto,))
+
+
+def test_contacto_con_cliente_inexistente(repo):
+    with pytest.raises(ErrorDatos, match="No existe el cliente c999"):
+        registrar_contacto(repo, "c999", "interesado", HOY)
