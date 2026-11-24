@@ -14,6 +14,7 @@ from pathlib import Path
 from ventas.cargador import ErrorDatos, cargar_todo
 from ventas.mensajes import validar_telefono
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
+from ventas.ofertas import Oferta
 from ventas.repositorio import Repositorio
 
 
@@ -128,6 +129,20 @@ def anular_venta(repo: Repositorio, id_venta: str) -> None:
 # ---------------------------------------------------------------------
 # Datos de ejemplo
 # ---------------------------------------------------------------------
+def poner_oferta(repo: Repositorio, id_producto: str, porcentaje: int, desde: date, hasta: date) -> Oferta:
+    """Pone (o cambia) la oferta de un producto del catálogo."""
+    _buscar(repo.cargar_todo().productos, "id_producto", id_producto, "producto")
+    if isinstance(porcentaje, float) and porcentaje.is_integer():
+        porcentaje = int(porcentaje)  # st.number_input puede devolver 15.0
+    oferta = Oferta(id_producto, porcentaje, desde, hasta)
+    repo.guardar_oferta(oferta)
+    return oferta
+
+
+def quitar_oferta(repo: Repositorio, id_producto: str) -> None:
+    repo.eliminar_oferta(id_producto)
+
+
 def sembrar(repo: Repositorio, directorio: str | Path) -> None:
     """Reemplaza todo por los datos de ejemplo (CSV). Todo o nada."""
     repo.reemplazar_todo(cargar_todo(directorio))

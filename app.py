@@ -2,7 +2,7 @@
 
 Ejecutar desde la carpeta del proyecto:  streamlit run app.py
 
-Dos secciones: Asesoría (agenda y modo mostrador) y Administración (resumen,
+Dos secciones: Asesoría (agenda, modo mostrador y ofertas de temporada) y Administración (resumen,
 clientes, productos y ventas). Las pantallas viven en paginas/ y se dibujan con
 el código de interfaz/; la lógica de negocio está en ventas/.
 """
@@ -48,6 +48,7 @@ navegacion = st.navigation(
         "Asesoría": [
             st.Page("paginas/agenda.py", title="Agenda de hoy", icon=":material/event_note:", default=True),
             st.Page("paginas/pedido.py", title="Arma mi pedido", icon=":material/shopping_cart:", url_path="pedido"),
+            st.Page("paginas/ofertas.py", title="Ofertas de temporada", icon=":material/sell:", url_path="ofertas"),
         ],
         "Administración": [
             st.Page("paginas/resumen.py", title="Resumen", icon=":material/dashboard:", url_path="resumen"),

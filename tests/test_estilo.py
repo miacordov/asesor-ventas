@@ -118,7 +118,7 @@ def test_las_imagenes_no_dependen_de_internet(nombre):
 
 
 def test_hay_una_ilustracion_por_pantalla():
-    assert set(estilo.ILUSTRACIONES) == {"agenda", "pedido", "resumen", "clientes", "productos", "ventas"}
+    assert set(estilo.ILUSTRACIONES) == {"agenda", "pedido", "ofertas", "resumen", "clientes", "productos", "ventas"}
 
 
 def test_cada_categoria_del_catalogo_tiene_su_icono_propio():

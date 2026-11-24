@@ -21,7 +21,7 @@ from streamlit.testing.v1 import AppTest
 RAIZ = Path(__file__).resolve().parent.parent
 APP = str(RAIZ / "app.py")
 TIEMPO = 60
-PAGINAS = ["agenda", "pedido", "resumen", "clientes", "productos", "registro_ventas"]
+PAGINAS = ["agenda", "pedido", "ofertas", "resumen", "clientes", "productos", "registro_ventas"]
 
 
 @pytest.fixture(autouse=True)
@@ -272,6 +272,57 @@ def test_sin_categorias_pide_elegir_al_menos_una():
     at.get("button_group")[0].set_value([]).run()
     assert ok(at)
     assert any("Elige al menos una categoría" in i.value for i in at.info)
+
+
+# =====================================================================
+# Asesoría: ofertas de temporada
+# =====================================================================
+def poner_oferta(at: AppTest, id_producto: str, porcentaje: int) -> AppTest:
+    at.selectbox(key="of_0_producto").set_value(id_producto).run()
+    at.number_input(key="of_0_porcentaje").set_value(porcentaje).run()
+    return boton(at, "Guardar oferta").click().run()
+
+
+def test_ofertas_proponen_la_temporada_que_viene():
+    at = abrir("ofertas")
+    assert at.selectbox(key="temporada_oferta").value == "fin_de_anio"  # referencia: 05/10/2026
+    assert len(tabla(at)) == 10
+    assert any("Todavía no hay ofertas" in i.value for i in at.info)
+
+
+def test_la_tabla_de_temporada_sugiere_que_ofertar():
+    at = abrir("ofertas")
+    at.selectbox(key="temporada_oferta").set_value("fiestas_patrias").run()
+    sugerencias = set(tabla(at)["Sugerencia"])
+    assert sugerencias <= {
+        "Pico de temporada: oferta gancho",
+        "Baja rotación: oferta para mover stock",
+        "Estable",
+        "Sin ventas registradas",
+    }
+    assert "Pico de temporada: oferta gancho" in sugerencias
+
+
+def test_filtrar_la_temporada_por_categoria():
+    at = abrir("ofertas")
+    at.selectbox(key="categoria_oferta").set_value("perifericos").run()
+    assert sorted(tabla(at)["Producto"]) == ["Mouse inalámbrico", "Teclado mecánico", "Webcam HD"]
+
+
+def test_guardar_una_oferta_y_verla_registrada():
+    at = poner_oferta(abrir("ofertas"), "p002", 20)
+    assert ok(at) and "Oferta guardada: Mouse inalámbrico con 20 % de descuento." in exito(at)
+    html = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
+    assert ("Mouse inalámbrico", "S/ 36.00") in filas_de_producto(html)  # 45 - 20 %
+    assert "Programada" in html  # empieza el 01/11/2026
+    assert "-20 %" in list(tabla(at)["Oferta"])
+
+
+def test_quitar_una_oferta():
+    at = poner_oferta(abrir("ofertas"), "p002", 20)
+    boton(at, "Quitar").click().run()
+    assert ok(at) and "Oferta de Mouse inalámbrico quitada." in exito(at)
+    assert any("Todavía no hay ofertas" in i.value for i in at.info)
 
 
 # =====================================================================
@@ -549,6 +600,7 @@ def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
     [
         ("agenda", "Asesoría", "Agenda de hoy"),
         ("pedido", "Asesoría · modo mostrador", "Arma mi pedido"),
+        ("ofertas", "Asesoría", "Ofertas de temporada"),
         ("resumen", "Administración", "Resumen del negocio"),
         ("clientes", "Administración", "Clientes"),
         ("productos", "Administración", "Productos"),

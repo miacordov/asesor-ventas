@@ -161,6 +161,12 @@ def _svg(cuerpo: str) -> str:
 
 
 ILUSTRACIONES = {
+    "ofertas": _svg(
+        '<path d="M84 40h74l52 52-58 58-52-52V40z" fill="#14305E"/><circle cx="108" cy="64" r="8" fill="#0B1D3A"/>'
+        '<text x="154" y="112" text-anchor="middle" font-family="Playfair Display,Georgia,serif" font-size="30" font-weight="700" fill="#D9B45A" stroke="none">%</text>'
+        '<path d="M42 70l14-14M42 98h20M50 122l14-10" stroke-opacity=".7"/>'
+        '<circle cx="232" cy="58" r="18" fill="#0B1D3A"/><path d="M224 58h16M232 50v16" stroke-width="2.6"/>'
+    ),
     "agenda": _svg(
         '<rect x="96" y="36" width="116" height="96" rx="12" fill="#14305E"/><path d="M96 62h116"/><path d="M124 28v16M184 28v16"/>'
         '<path d="M118 80h14M146 80h14M174 80h14M118 100h14M146 100h14"/>'
