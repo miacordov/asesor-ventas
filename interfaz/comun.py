@@ -25,6 +25,9 @@ NOMBRES_CATEGORIA = {
     "accesorios": "Accesorios",
     "almacenamiento": "Almacenamiento",
     "mobiliario": "Mobiliario",
+    "graficas": "Tarjetas gráficas",
+    "memorias": "Memorias USB y microSD",
+    "memoria_ram": "Memoria RAM",
 }
 
 

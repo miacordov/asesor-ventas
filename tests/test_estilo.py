@@ -123,7 +123,7 @@ def test_hay_una_ilustracion_por_pantalla():
 
 def test_cada_categoria_del_catalogo_tiene_su_icono_propio():
     generico = estilo.icono_categoria("categoria_que_no_existe")
-    categorias = {p.categoria for p in cargar_todo(RAIZ / "tests" / "datos").productos}
+    categorias = {p.categoria for p in cargar_todo(RAIZ / "datos").productos}
     assert categorias
     for categoria in categorias:
         assert estilo.icono_categoria(categoria) != generico, categoria

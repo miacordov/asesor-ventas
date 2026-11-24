@@ -27,6 +27,8 @@ PAGINAS = ["agenda", "pedido", "resumen", "clientes", "productos", "registro_ven
 @pytest.fixture(autouse=True)
 def entorno_limpio(monkeypatch):
     monkeypatch.setenv("ASESOR_DB", ":memory:")
+    # Datos fijos de prueba: los valores esperados se calcularon a mano sobre ellos.
+    monkeypatch.setattr("interfaz.comun.CARPETA_CSV", RAIZ / "tests" / "datos")
     st.cache_resource.clear()
     yield
     st.cache_resource.clear()

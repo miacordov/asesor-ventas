@@ -213,6 +213,9 @@ _ICONOS = {
     "accesorios": '<path d="M8.5 8a3.5 3.5 0 0 1 7 0"/><rect x="5" y="8" width="14" height="13" rx="3"/><path d="M9 14h6M9 17.5h6"/>',
     "almacenamiento": '<rect x="3" y="7" width="18" height="10" rx="2"/><circle cx="17" cy="12" r="1.1"/><path d="M6 12h6"/>',
     "mobiliario": '<path d="M7 4h8a2 2 0 0 1 2 2v6H7z"/><path d="M5 12h14v3H5zM8 15v5M16 15v5"/>',
+    "graficas": '<rect x="2" y="7" width="20" height="10" rx="1.6"/><circle cx="9" cy="12" r="2.6"/><circle cx="16" cy="12" r="2.6"/><path d="M5 17v3"/>',
+    "memorias": '<path d="M8 3h8l3 3v15H5V3z"/><path d="M9 3v4M12 3v4M15 3v4"/>',
+    "memoria_ram": '<rect x="2" y="7" width="20" height="9" rx="1.2"/><path d="M6 10v3M10 10v3M14 10v3M18 10v3M5 16v2M19 16v2"/>',
 }
 _ICONO_GENERICO = '<path d="M3 12l9-9h8v8l-9 9z"/><circle cx="16" cy="8" r="1.3"/>'
 
