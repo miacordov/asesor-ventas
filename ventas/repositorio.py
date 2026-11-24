@@ -12,6 +12,7 @@ import re
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from datetime import date
 
 from ventas.cargador import Datos, ErrorDatos
@@ -38,7 +39,9 @@ CREATE TABLE IF NOT EXISTS productos (
     id_producto     TEXT PRIMARY KEY,
     nombre          TEXT NOT NULL,
     categoria       TEXT NOT NULL,
-    precio_centavos INTEGER NOT NULL CHECK (precio_centavos > 0)
+    precio_centavos INTEGER NOT NULL CHECK (precio_centavos > 0),
+    costo_centavos  INTEGER CHECK (costo_centavos IS NULL OR costo_centavos > 0),
+    stock           INTEGER CHECK (stock IS NULL OR stock >= 0)
 );
 CREATE TABLE IF NOT EXISTS ventas (
     id_venta        TEXT PRIMARY KEY,
@@ -99,6 +102,30 @@ CREATE TABLE IF NOT EXISTS combo_ventas (
 def _centavos(monto: float) -> int:
     return round(monto * 100)
 
+
+_INSERTAR_PRODUCTO = (
+    "INSERT INTO productos (id_producto, nombre, categoria, precio_centavos, costo_centavos, stock) "
+    "VALUES (?, ?, ?, ?, ?, ?)"
+)
+
+# El stock lo cuida la base: cualquier venta (suelta o de un combo) lo descuenta,
+# anularla lo devuelve, y sin stock suficiente la operación entera se deshace.
+# Un producto con stock NULL no se controla.
+_DISPARADORES = """
+CREATE TRIGGER IF NOT EXISTS ventas_controlan_stock BEFORE INSERT ON ventas
+WHEN (SELECT stock FROM productos WHERE id_producto = NEW.id_producto) < NEW.cantidad
+BEGIN
+    SELECT RAISE(ABORT, 'stock_insuficiente');
+END;
+CREATE TRIGGER IF NOT EXISTS ventas_descuentan_stock AFTER INSERT ON ventas
+BEGIN
+    UPDATE productos SET stock = stock - NEW.cantidad WHERE id_producto = NEW.id_producto AND stock IS NOT NULL;
+END;
+CREATE TRIGGER IF NOT EXISTS ventas_devuelven_stock AFTER DELETE ON ventas
+BEGIN
+    UPDATE productos SET stock = stock + OLD.cantidad WHERE id_producto = OLD.id_producto AND stock IS NOT NULL;
+END;
+"""
 
 class Repositorio(ABC):
     """Contrato de persistencia."""
@@ -190,6 +217,22 @@ class RepositorioSQLite(Repositorio):
         with self._candado, self._con:
             self._con.executescript(_ESQUEMA)
         self._migrar_combos_sin_cliente()
+        self._migrar_costo_y_stock()
+        with self._candado, self._con:
+            self._con.executescript(_DISPARADORES)
+
+    def _migrar_costo_y_stock(self) -> None:
+        """Las bases anteriores no tenían costo ni stock: se agregan las columnas
+        vacías (sin costo y sin control de stock), sin tocar las filas."""
+        with self._candado, self._con:
+            columnas = {fila[1] for fila in self._con.execute("PRAGMA table_info(productos)")}
+            if "costo_centavos" not in columnas:
+                self._con.execute(
+                    "ALTER TABLE productos ADD COLUMN costo_centavos INTEGER "
+                    "CHECK (costo_centavos IS NULL OR costo_centavos > 0)"
+                )
+            if "stock" not in columnas:
+                self._con.execute("ALTER TABLE productos ADD COLUMN stock INTEGER CHECK (stock IS NULL OR stock >= 0)")
 
     def _migrar_combos_sin_cliente(self) -> None:
         """Bases creadas antes de admitir clientes no registrados: la tabla combos
@@ -235,9 +278,10 @@ class RepositorioSQLite(Repositorio):
                 for i, n, t in self._con.execute("SELECT id_cliente, nombre, telefono FROM clientes ORDER BY rowid")
             )
             productos = tuple(
-                Producto(i, n, c, p / 100)
-                for i, n, c, p in self._con.execute(
-                    "SELECT id_producto, nombre, categoria, precio_centavos FROM productos ORDER BY rowid"
+                Producto(i, n, c, p / 100, None if co is None else co / 100, s)
+                for i, n, c, p, co, s in self._con.execute(
+                    "SELECT id_producto, nombre, categoria, precio_centavos, costo_centavos, stock "
+                    "FROM productos ORDER BY rowid"
                 )
             )
             ventas = tuple(
@@ -287,9 +331,9 @@ class RepositorioSQLite(Repositorio):
                     "INSERT INTO clientes VALUES (?, ?, ?)",
                     [(c.id_cliente, c.nombre, c.telefono) for c in datos.clientes],
                 )
+                # Sin stock al principio: las ventas históricas no deben descontarlo.
                 self._con.executemany(
-                    "INSERT INTO productos VALUES (?, ?, ?, ?)",
-                    [(p.id_producto, p.nombre, p.categoria, _centavos(p.precio)) for p in datos.productos],
+                    _INSERTAR_PRODUCTO, [_fila_producto(replace(p, stock=None)) for p in datos.productos]
                 )
                 self._con.executemany(
                     "INSERT INTO ventas VALUES (?, ?, ?, ?, ?, ?)",
@@ -297,6 +341,10 @@ class RepositorioSQLite(Repositorio):
                         (v.id_venta, v.id_cliente, v.id_producto, v.cantidad, _centavos(v.precio_unitario), v.fecha.isoformat())
                         for v in datos.ventas
                     ],
+                )
+                self._con.executemany(
+                    "UPDATE productos SET stock = ? WHERE id_producto = ?",
+                    [(p.stock, p.id_producto) for p in datos.productos if p.stock is not None],
                 )
         except sqlite3.IntegrityError as error:
             raise ErrorDatos(_traducir(error, "los datos a cargar")) from error
@@ -328,16 +376,13 @@ class RepositorioSQLite(Repositorio):
         self._eliminar("clientes", "id_cliente", id_cliente, "ventas", "cliente")
 
     def agregar_producto(self, producto: Producto) -> None:
-        self._ejecutar(
-            "INSERT INTO productos VALUES (?, ?, ?, ?)",
-            (producto.id_producto, producto.nombre, producto.categoria, _centavos(producto.precio)),
-            f"el producto {producto.id_producto}",
-        )
+        self._ejecutar(_INSERTAR_PRODUCTO, _fila_producto(producto), f"el producto {producto.id_producto}")
 
     def actualizar_producto(self, producto: Producto) -> None:
         filas = self._ejecutar(
-            "UPDATE productos SET nombre = ?, categoria = ?, precio_centavos = ? WHERE id_producto = ?",
-            (producto.nombre, producto.categoria, _centavos(producto.precio), producto.id_producto),
+            "UPDATE productos SET nombre = ?, categoria = ?, precio_centavos = ?, costo_centavos = ?, stock = ? "
+            "WHERE id_producto = ?",
+            (*_fila_producto(producto)[1:], producto.id_producto),
             f"el producto {producto.id_producto}",
         )
         if not filas:
@@ -519,8 +564,15 @@ class RepositorioSQLite(Repositorio):
         self._ejecutar(f"DELETE FROM {tabla} WHERE {columna} = ?", (valor,), f"el {nombre} {valor}")
 
 
+def _fila_producto(p: Producto) -> tuple:
+    costo = None if p.costo is None else _centavos(p.costo)
+    return (p.id_producto, p.nombre, p.categoria, _centavos(p.precio), costo, p.stock)
+
+
 def _traducir(error: sqlite3.IntegrityError, descripcion: str) -> str:
     texto = str(error)
+    if "stock_insuficiente" in texto:
+        return f"No hay stock suficiente para registrar {descripcion}."
     if "UNIQUE" in texto or "PRIMARY KEY" in texto:
         return f"Ya existe {descripcion}."
     if "FOREIGN KEY" in texto:

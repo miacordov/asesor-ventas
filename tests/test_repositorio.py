@@ -536,3 +536,86 @@ def test_restablecer_los_datos_borra_los_contactos(repo_con_datos, datos):
     repo_con_datos.agregar_contacto(nuevo_contacto("c001", date(2026, 11, 1), "interesado"))
     repo_con_datos.reemplazar_todo(datos)
     assert repo_con_datos.cargar_contactos() == ()
+
+
+# =====================================================================
+# Costo y stock
+# =====================================================================
+def con_stock(repo, id_producto, stock, costo=None):
+    p = next(p for p in repo.cargar_todo().productos if p.id_producto == id_producto)
+    repo.actualizar_producto(Producto(p.id_producto, p.nombre, p.categoria, p.precio, costo=costo, stock=stock))
+
+
+def stock_de(repo, id_producto):
+    return next(p.stock for p in repo.cargar_todo().productos if p.id_producto == id_producto)
+
+
+def test_guarda_costo_y_stock(repo_con_datos):
+    con_stock(repo_con_datos, "p002", 7, costo=30.5)
+    p = next(p for p in repo_con_datos.cargar_todo().productos if p.id_producto == "p002")
+    assert (p.costo, p.stock) == (30.5, 7)
+
+
+def test_vender_descuenta_y_anular_devuelve_el_stock(repo_con_datos):
+    con_stock(repo_con_datos, "p002", 5)
+    repo_con_datos.agregar_venta(venta("v900", producto="p002", cantidad=2))
+    assert stock_de(repo_con_datos, "p002") == 3
+    repo_con_datos.eliminar_venta("v900")
+    assert stock_de(repo_con_datos, "p002") == 5
+
+
+def test_sin_stock_suficiente_no_se_vende(repo_con_datos):
+    con_stock(repo_con_datos, "p002", 1)
+    with pytest.raises(ErrorDatos, match="No hay stock suficiente"):
+        repo_con_datos.agregar_venta(venta("v900", producto="p002", cantidad=2))
+    assert stock_de(repo_con_datos, "p002") == 1
+    assert "v900" not in {v.id_venta for v in repo_con_datos.cargar_todo().ventas}
+
+
+def test_sin_stock_cargado_no_se_controla(repo_con_datos):
+    repo_con_datos.agregar_venta(venta("v900", producto="p002", cantidad=50))
+    assert stock_de(repo_con_datos, "p002") is None
+
+
+def test_un_combo_sin_stock_de_un_producto_no_registra_nada(repo_con_datos):
+    from ventas.combos import Combo
+
+    repo_con_datos.agregar_combo(Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5)))
+    con_stock(repo_con_datos, "p002", 3)
+    con_stock(repo_con_datos, "p009", 0)
+    with pytest.raises(ErrorDatos, match="No hay stock suficiente"):
+        repo_con_datos.registrar_combo("cb001", (venta("v900", producto="p002"), venta("v901", producto="p009")))
+    assert (stock_de(repo_con_datos, "p002"), stock_de(repo_con_datos, "p009")) == (3, 0)
+    assert repo_con_datos.cargar_combos()[0].pendiente
+
+
+def test_cargar_datos_respeta_el_stock_indicado(repo, datos):
+    # El stock del archivo es el actual: las ventas históricas no lo vuelven a descontar.
+    productos = tuple(Producto(p.id_producto, p.nombre, p.categoria, p.precio, stock=10) for p in datos.productos)
+    repo.reemplazar_todo(type(datos)(datos.clientes, productos, datos.ventas))
+    assert {p.stock for p in repo.cargar_todo().productos} == {10}
+
+
+def test_una_base_sin_costo_ni_stock_se_migra_sin_perder_nada(tmp_path, datos):
+    import sqlite3
+
+    ruta = str(tmp_path / "vieja.db")
+    con = sqlite3.connect(ruta)
+    con.executescript(
+        """
+        CREATE TABLE productos (
+            id_producto     TEXT PRIMARY KEY,
+            nombre          TEXT NOT NULL,
+            categoria       TEXT NOT NULL,
+            precio_centavos INTEGER NOT NULL CHECK (precio_centavos > 0)
+        );
+        INSERT INTO productos VALUES ('p001', 'Mouse', 'perifericos', 4500);
+        """
+    )
+    con.commit()
+    con.close()
+    repo = RepositorioSQLite(ruta)
+    assert repo.cargar_todo().productos == (Producto("p001", "Mouse", "perifericos", 45.0),)
+    con_stock(repo, "p001", 2, costo=30.0)
+    assert stock_de(repo, "p001") == 2
+    repo.cerrar()

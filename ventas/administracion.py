@@ -8,6 +8,7 @@ que la interfaz muestra tal cual.
 
 import re
 import unicodedata
+from collections.abc import Iterable, Mapping
 from datetime import date
 from pathlib import Path
 
@@ -84,19 +85,66 @@ def eliminar_cliente(repo: Repositorio, id_cliente: str) -> None:
 # ---------------------------------------------------------------------
 # Productos
 # ---------------------------------------------------------------------
-def crear_producto(repo: Repositorio, nombre: str, categoria: str, precio: float) -> Producto:
+_SIN_CAMBIO = object()  # editar_producto: conservar el valor actual
+
+
+def _costo(valor) -> float | None:
+    return None if valor is None else round(float(valor), 2)
+
+
+def _stock(valor) -> int | None:
+    if valor is None:
+        return None
+    if isinstance(valor, float) and valor.is_integer():
+        return int(valor)
+    return valor
+
+
+def crear_producto(
+    repo: Repositorio, nombre: str, categoria: str, precio: float, costo: float | None = None, stock: int | None = None
+) -> Producto:
     producto = Producto(
-        repo.siguiente_id("p"), limpiar_nombre(nombre), normalizar_categoria(categoria), round(float(precio), 2)
+        repo.siguiente_id("p"),
+        limpiar_nombre(nombre),
+        normalizar_categoria(categoria),
+        round(float(precio), 2),
+        costo=_costo(costo),
+        stock=_stock(stock),
     )
     repo.agregar_producto(producto)
     return producto
 
 
-def editar_producto(repo: Repositorio, id_producto: str, nombre: str, categoria: str, precio: float) -> Producto:
-    _buscar(repo.cargar_todo().productos, "id_producto", id_producto, "producto")
-    producto = Producto(id_producto, limpiar_nombre(nombre), normalizar_categoria(categoria), round(float(precio), 2))
+def editar_producto(
+    repo: Repositorio,
+    id_producto: str,
+    nombre: str,
+    categoria: str,
+    precio: float,
+    costo=_SIN_CAMBIO,
+    stock=_SIN_CAMBIO,
+) -> Producto:
+    """Sin `costo` o `stock`, se conservan los actuales; None deja de cargarlos."""
+    actual = _buscar(repo.cargar_todo().productos, "id_producto", id_producto, "producto")
+    producto = Producto(
+        id_producto,
+        limpiar_nombre(nombre),
+        normalizar_categoria(categoria),
+        round(float(precio), 2),
+        costo=actual.costo if costo is _SIN_CAMBIO else _costo(costo),
+        stock=actual.stock if stock is _SIN_CAMBIO else _stock(stock),
+    )
     repo.actualizar_producto(producto)
     return producto
+
+
+def revisar_stock(productos: Iterable[Producto], pedido: Mapping[str, int]) -> None:
+    """Falla con un mensaje claro si algún producto no alcanza (los que no
+    controlan stock siempre alcanzan). La base de datos igual lo garantiza."""
+    for p in productos:
+        if p.id_producto in pedido and p.stock is not None and pedido[p.id_producto] > p.stock:
+            queda = "queda 1" if p.stock == 1 else f"quedan {p.stock}"
+            raise ValueError(f"No hay stock suficiente de {p.nombre}: {queda}.")
 
 
 def eliminar_producto(repo: Repositorio, id_producto: str) -> None:
@@ -120,6 +168,7 @@ def registrar_venta(
     _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
     producto = _buscar(datos.productos, "id_producto", id_producto, "producto")
     precio = producto.precio if precio_unitario is None else round(float(precio_unitario), 2)
+    revisar_stock([producto], {id_producto: cantidad})
     venta = Venta(repo.siguiente_id("v"), id_cliente, id_producto, cantidad, precio, fecha)
     repo.agregar_venta(venta)
     return venta
@@ -216,6 +265,7 @@ def registrar_combo(repo: Repositorio, id_combo: str, fecha: date) -> tuple[Vent
     primero = int(repo.siguiente_id("v")[1:])
     ids_ventas = [f"v{primero + i:03d}" for i in range(len(lineas))]
     ventas = ventas_del_combo(combo, lineas, ids_ventas, fecha, nuevo.id_cliente if nuevo else None)
+    revisar_stock((linea.producto for linea in lineas), {v.id_producto: v.cantidad for v in ventas})
     repo.registrar_combo(id_combo, ventas, nuevo)
     return ventas
 

@@ -496,3 +496,51 @@ def test_registrar_contacto(repo):
 def test_contacto_con_cliente_inexistente(repo):
     with pytest.raises(ErrorDatos, match="No existe el cliente c999"):
         registrar_contacto(repo, "c999", "interesado", HOY)
+
+
+# =====================================================================
+# Costo y stock
+# =====================================================================
+def producto_de(repo, id_producto):
+    return next(p for p in repo.cargar_todo().productos if p.id_producto == id_producto)
+
+
+def test_crear_producto_con_costo_y_stock(repo):
+    p = crear_producto(repo, "Mouse gamer", "perifericos", 80, costo=50, stock=4)
+    assert (producto_de(repo, p.id_producto).costo, producto_de(repo, p.id_producto).stock) == (50.0, 4)
+
+
+def test_editar_sin_costo_ni_stock_los_conserva(repo):
+    editar_producto(repo, "p002", "Mouse", "perifericos", 45, costo=30, stock=6)
+    editar_producto(repo, "p002", "Mouse inalámbrico", "perifericos", 49)
+    p = producto_de(repo, "p002")
+    assert (p.nombre, p.precio, p.costo, p.stock) == ("Mouse inalámbrico", 49.0, 30.0, 6)
+
+
+def test_editar_puede_dejar_de_controlar_el_stock(repo):
+    editar_producto(repo, "p002", "Mouse", "perifericos", 45, stock=6)
+    editar_producto(repo, "p002", "Mouse", "perifericos", 45, stock=None)
+    assert producto_de(repo, "p002").stock is None
+
+
+def test_vender_mas_de_lo_que_hay_avisa_cuanto_queda(repo):
+    editar_producto(repo, "p002", "Mouse inalámbrico", "perifericos", 45, stock=1)
+    with pytest.raises(ValueError, match="No hay stock suficiente de Mouse inalámbrico: queda 1."):
+        registrar_venta(repo, "c001", "p002", 2, HOY)
+    registrar_venta(repo, "c001", "p002", 1, HOY)
+    assert producto_de(repo, "p002").stock == 0
+
+
+def test_anular_una_venta_devuelve_el_stock(repo):
+    editar_producto(repo, "p002", "Mouse inalámbrico", "perifericos", 45, stock=3)
+    venta = registrar_venta(repo, "c001", "p002", 2, HOY)
+    anular_venta(repo, venta.id_venta)
+    assert producto_de(repo, "p002").stock == 3
+
+
+def test_registrar_un_combo_sin_stock_avisa_que_producto_falta(repo):
+    editar_producto(repo, "p009", "Hub USB-C", "accesorios", 60, stock=0)
+    combo = guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    with pytest.raises(ValueError, match="No hay stock suficiente de Hub USB-C: quedan 0."):
+        registrar_combo(repo, combo.id_combo, HOY)
+    assert repo.cargar_combos()[0].pendiente
