@@ -500,6 +500,26 @@ def test_lista_de_productos():
     )
 
 
+def test_el_catalogo_muestra_la_oferta_vigente_hasta_su_vencimiento():
+    abrir("productos")
+    ofertar("p002", 20)  # vigente del 01/10 al 31/10/2026; referencia: 05/10/2026
+    t = tabla(abrir("productos"))
+    mouse = t[t["Producto"] == "Mouse inalámbrico"].iloc[0]
+    assert (mouse["Oferta"], mouse["Precio con oferta"]) == ("-20 % hasta el 31/10/2026", 36.0)
+    laptop = t[t["Producto"] == "Laptop 14 pulgadas"].iloc[0]
+    assert laptop["Oferta"] == "" and laptop["Precio con oferta"] == 2400.0
+
+
+def test_el_catalogo_no_muestra_ofertas_vencidas():
+    from interfaz import comun
+    from ventas.ofertas import Oferta
+
+    abrir("productos")
+    comun.repositorio().guardar_oferta(Oferta("p002", 20, date(2026, 9, 1), date(2026, 9, 30)))
+    t = tabla(abrir("productos"))
+    assert t[t["Producto"] == "Mouse inalámbrico"].iloc[0]["Oferta"] == ""
+
+
 def test_registrar_un_producto_en_una_categoria_existente():
     at = abrir("productos")
     at.text_input(key="np_0_nombre").set_value("Cable HDMI").run()
