@@ -9,7 +9,7 @@ from ventas.logico import PuenteProlog
 from ventas.modelos import ClienteFrecuente, ClienteRegular
 from ventas.servicio import clientes_con_perfil, construir_tarjetas, resumen_ventas
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 
@@ -89,14 +89,16 @@ def test_limite_de_pedidos(datos, motor):
 
 
 def test_el_mensaje_coincide_con_el_primer_pedido(tarjetas):
-    for t in tarjetas:
+    for t in (t for t in tarjetas if t.pedidos):
         assert t.mensaje.id_cliente == t.cliente.id_cliente
         for producto in t.pedidos[0].pedido.productos:
             assert producto.nombre in t.mensaje.texto
 
 
-def test_todos_los_clientes_de_la_agenda_tienen_pedido_y_enlace(tarjetas):
-    assert all(t.pedidos for t in tarjetas)
+def test_los_clientes_sin_combinacion_no_tienen_pedido_pero_si_enlace(tarjetas):
+    sin_pedido = {t.cliente.id_cliente for t in tarjetas if not t.pedidos}
+    assert sin_pedido == {"c003", "c004", "c008"}
+    assert all(len(p.pedido.productos) >= 2 for t in tarjetas for p in t.pedidos)
     assert all(t.mensaje.enlace for t in tarjetas)
 
 

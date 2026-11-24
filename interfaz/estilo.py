@@ -161,6 +161,12 @@ def _svg(cuerpo: str) -> str:
 
 
 ILUSTRACIONES = {
+    "ofertas": _svg(
+        '<path d="M84 40h74l52 52-58 58-52-52V40z" fill="#14305E"/><circle cx="108" cy="64" r="8" fill="#0B1D3A"/>'
+        '<text x="154" y="112" text-anchor="middle" font-family="Playfair Display,Georgia,serif" font-size="30" font-weight="700" fill="#D9B45A" stroke="none">%</text>'
+        '<path d="M42 70l14-14M42 98h20M50 122l14-10" stroke-opacity=".7"/>'
+        '<circle cx="232" cy="58" r="18" fill="#0B1D3A"/><path d="M224 58h16M232 50v16" stroke-width="2.6"/>'
+    ),
     "agenda": _svg(
         '<rect x="96" y="36" width="116" height="96" rx="12" fill="#14305E"/><path d="M96 62h116"/><path d="M124 28v16M184 28v16"/>'
         '<path d="M118 80h14M146 80h14M174 80h14M118 100h14M146 100h14"/>'
@@ -213,6 +219,9 @@ _ICONOS = {
     "accesorios": '<path d="M8.5 8a3.5 3.5 0 0 1 7 0"/><rect x="5" y="8" width="14" height="13" rx="3"/><path d="M9 14h6M9 17.5h6"/>',
     "almacenamiento": '<rect x="3" y="7" width="18" height="10" rx="2"/><circle cx="17" cy="12" r="1.1"/><path d="M6 12h6"/>',
     "mobiliario": '<path d="M7 4h8a2 2 0 0 1 2 2v6H7z"/><path d="M5 12h14v3H5zM8 15v5M16 15v5"/>',
+    "graficas": '<rect x="2" y="7" width="20" height="10" rx="1.6"/><circle cx="9" cy="12" r="2.6"/><circle cx="16" cy="12" r="2.6"/><path d="M5 17v3"/>',
+    "memorias": '<path d="M8 3h8l3 3v15H5V3z"/><path d="M9 3v4M12 3v4M15 3v4"/>',
+    "memoria_ram": '<rect x="2" y="7" width="20" height="9" rx="1.2"/><path d="M6 10v3M10 10v3M14 10v3M18 10v3M5 16v2M19 16v2"/>',
 }
 _ICONO_GENERICO = '<path d="M3 12l9-9h8v8l-9 9z"/><circle cx="16" cy="8" r="1.3"/>'
 

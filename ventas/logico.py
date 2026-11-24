@@ -22,6 +22,7 @@ RUTA_REGLAS = RUTA_PROLOG / "reglas.pl"
 RUTA_AGENDA = RUTA_PROLOG / "agenda.pl"
 RUTA_PEDIDO = RUTA_PROLOG / "pedido.pl"
 DIAS_INACTIVIDAD = 30  # más de estos días sin comprar = cliente inactivo
+MINIMO_PRODUCTOS = 2  # una combinación lleva al menos 2 productos (ver pedido.pl)
 
 
 class MotorLogico(ABC):
@@ -69,7 +70,9 @@ class MotorPedidos(ABC):
         max_combinaciones: int = 200,
     ) -> tuple[tuple[str, ...], ...]:
         """Combinaciones válidas (ids ordenados), un producto por categoría pedida,
-        sin pasarse del presupuesto. Con id_cliente excluye lo que ya compró."""
+        sin pasarse del presupuesto. Con id_cliente excluye lo que ya compró.
+        Una combinación lleva al menos MINIMO_PRODUCTOS productos: con una sola
+        categoría no hay combinaciones."""
 
 
 def _a_centavos(monto: float) -> int:

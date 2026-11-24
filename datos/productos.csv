@@ -9,3 +9,33 @@ p007,Mochila para laptop,accesorios,85
 p008,Disco externo 1TB,almacenamiento,230
 p009,Hub USB-C,accesorios,60
 p010,Silla ergonómica,mobiliario,450
+p011,Mouse gamer RGB,perifericos,89
+p012,Teclado inalámbrico compacto,perifericos,75
+p013,Teclado gamer TKL,perifericos,199
+p014,Mousepad XL,perifericos,39
+p015,Webcam Full HD 1080p,perifericos,179
+p016,Micrófono USB de condensador,perifericos,249
+p017,Control inalámbrico para PC,perifericos,159
+p018,Parlantes 2.0 USB,perifericos,69
+p019,Impresora multifuncional,perifericos,549
+p020,Tarjeta gráfica GTX 1650 4GB,graficas,799
+p021,Tarjeta gráfica RTX 3050 8GB,graficas,1099
+p022,Tarjeta gráfica RTX 4060 8GB,graficas,1449
+p023,Tarjeta gráfica RX 7600 8GB,graficas,1299
+p024,Tarjeta gráfica RTX 4060 Ti 16GB,graficas,2099
+p025,Tarjeta gráfica RTX 4070 Super 12GB,graficas,2999
+p026,Tarjeta gráfica Arc A580 8GB,graficas,949
+p027,Memoria USB 32GB,memorias,25
+p028,Memoria USB 64GB,memorias,39
+p029,Memoria USB 128GB 3.2,memorias,69
+p030,Tarjeta microSD 64GB,memorias,35
+p031,Tarjeta microSD 128GB,memorias,59
+p032,Tarjeta microSD 256GB,memorias,119
+p033,Lector de tarjetas USB-C,memorias,45
+p034,RAM DDR4 8GB 3200MHz,memoria_ram,99
+p035,RAM DDR4 16GB 3200MHz,memoria_ram,179
+p036,RAM DDR4 32GB (2x16) 3600MHz,memoria_ram,349
+p037,RAM DDR5 16GB 5600MHz,memoria_ram,229
+p038,RAM DDR5 32GB (2x16) 6000MHz,memoria_ram,459
+p039,RAM SO-DIMM DDR4 8GB laptop,memoria_ram,109
+p040,RAM SO-DIMM DDR4 16GB laptop,memoria_ram,189

@@ -12,7 +12,7 @@ from ventas.cargador import (
     validar_integridad,
 )
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 
 CABECERA_CLIENTES = "id_cliente,nombre,telefono\n"
 CABECERA_PRODUCTOS = "id_producto,nombre,categoria,precio\n"

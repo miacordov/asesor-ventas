@@ -6,9 +6,10 @@ import pytest
 
 from ventas.cargador import Datos, ErrorDatos, cargar_todo
 from ventas.modelos import ClienteRegular, Producto, Venta
+from ventas.ofertas import Oferta
 from ventas.repositorio import Repositorio, RepositorioSQLite
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 
 
 @pytest.fixture
@@ -323,3 +324,61 @@ def test_leer_mientras_se_escribe(repo_con_datos):
     for h in hilos:
         h.join()
     assert all(n in (30, 31) for n in resultados)
+
+
+# =====================================================================
+# Ofertas
+# =====================================================================
+def test_sin_ofertas_al_empezar(repo_con_datos):
+    assert repo_con_datos.cargar_ofertas() == ()
+
+
+def test_guardar_y_leer_una_oferta(repo_con_datos):
+    oferta = Oferta("p002", 15, date(2026, 11, 1), date(2026, 12, 31))
+    repo_con_datos.guardar_oferta(oferta)
+    assert repo_con_datos.cargar_ofertas() == (oferta,)
+
+
+def test_guardar_otra_vez_reemplaza_la_oferta_del_producto(repo_con_datos):
+    repo_con_datos.guardar_oferta(Oferta("p002", 15, date(2026, 11, 1), date(2026, 12, 31)))
+    nueva = Oferta("p002", 30, date(2026, 12, 1), date(2026, 12, 24))
+    repo_con_datos.guardar_oferta(nueva)
+    assert repo_con_datos.cargar_ofertas() == (nueva,)
+
+
+def test_eliminar_una_oferta(repo_con_datos):
+    repo_con_datos.guardar_oferta(Oferta("p002", 15, date(2026, 11, 1), date(2026, 12, 31)))
+    repo_con_datos.eliminar_oferta("p002")
+    assert repo_con_datos.cargar_ofertas() == ()
+    with pytest.raises(ErrorDatos, match="no tiene oferta"):
+        repo_con_datos.eliminar_oferta("p002")
+
+
+def test_no_se_puede_ofertar_un_producto_inexistente(repo_con_datos):
+    with pytest.raises(ErrorDatos, match="no existe"):
+        repo_con_datos.guardar_oferta(Oferta("p999", 10, date(2026, 11, 1), date(2026, 11, 2)))
+
+
+def test_eliminar_el_producto_elimina_su_oferta(repo_con_datos):
+    repo_con_datos.agregar_producto(Producto("p100", "Nuevo", "audio", 50.0))
+    repo_con_datos.guardar_oferta(Oferta("p100", 10, date(2026, 11, 1), date(2026, 11, 30)))
+    repo_con_datos.eliminar_producto("p100")
+    assert repo_con_datos.cargar_ofertas() == ()
+
+
+def test_restablecer_los_datos_borra_las_ofertas(repo_con_datos, datos):
+    repo_con_datos.guardar_oferta(Oferta("p002", 15, date(2026, 11, 1), date(2026, 12, 31)))
+    repo_con_datos.reemplazar_todo(datos)
+    assert repo_con_datos.cargar_ofertas() == ()
+
+
+def test_una_base_existente_recibe_la_tabla_de_ofertas(tmp_path, datos):
+    # Una base creada antes de existir las ofertas: abrirla agrega la tabla sin tocar lo demás.
+    ruta = str(tmp_path / "vieja.db")
+    viejo = RepositorioSQLite(ruta)
+    viejo.reemplazar_todo(datos)
+    viejo._con.execute("DROP TABLE ofertas")
+    viejo.cerrar()
+    reabierto = RepositorioSQLite(ruta)
+    assert reabierto.cargar_todo() == datos and reabierto.cargar_ofertas() == ()
+    reabierto.cerrar()

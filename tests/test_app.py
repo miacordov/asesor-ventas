@@ -21,12 +21,14 @@ from streamlit.testing.v1 import AppTest
 RAIZ = Path(__file__).resolve().parent.parent
 APP = str(RAIZ / "app.py")
 TIEMPO = 60
-PAGINAS = ["agenda", "pedido", "resumen", "clientes", "productos", "registro_ventas"]
+PAGINAS = ["agenda", "pedido", "ofertas", "resumen", "clientes", "productos", "registro_ventas"]
 
 
 @pytest.fixture(autouse=True)
 def entorno_limpio(monkeypatch):
     monkeypatch.setenv("ASESOR_DB", ":memory:")
+    # Datos fijos de prueba: los valores esperados se calcularon a mano sobre ellos.
+    monkeypatch.setattr("interfaz.comun.CARPETA_CSV", RAIZ / "tests" / "datos")
     st.cache_resource.clear()
     yield
     st.cache_resource.clear()
@@ -117,7 +119,7 @@ def test_la_fecha_de_referencia_por_defecto_es_la_de_la_demostracion():
 
 def test_datos_de_ejemplo_invalidos_muestran_un_mensaje_claro(tmp_path, monkeypatch):
     for nombre in ("clientes.csv", "productos.csv"):
-        shutil.copy(RAIZ / "datos" / nombre, tmp_path / nombre)
+        shutil.copy(RAIZ / "tests" / "datos" / nombre, tmp_path / nombre)
     (tmp_path / "ventas.csv").write_text(
         "id_venta,id_cliente,id_producto,cantidad,precio_unitario,fecha\nv001,c001,p001,dos,10,2026-09-01\n",
         encoding="utf-8",
@@ -162,7 +164,7 @@ def test_agenda_indicadores_calculados_a_mano():
         "Por reactivar": "2",
         "Por fidelizar": "3",
         "Complementar": "2",
-        "Valor en pedidos sugeridos": "S/ 1,770.50",  # 607.50+261+382.50+108+76.50+110+225
+        "Valor en pedidos sugeridos": "S/ 1,476.00",  # 607.50+261+382.50+225 (Ana, Lucía y Carlos sin combinación)
     }
 
 
@@ -184,7 +186,7 @@ def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
     at = abrir()
     assert "Compró 3 veces, lleva 40 días sin comprar" in [m.value for m in at.markdown]
     assert ("S/ 675.00", "S/ 607.50") in totales(at)  # Juan: precio tachado y total con descuento
-    assert ("", "S/ 110.00") in totales(at)  # Carlos es regular: sin descuento
+    assert ("", "S/ 225.00") in totales(at)  # Luis es regular: sin descuento
     assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
@@ -249,11 +251,115 @@ def test_el_presupuesto_limita_las_combinaciones(presupuesto, combinaciones):
     assert len(at.warning) == (1 if combinaciones == 0 else 0)
 
 
+def test_si_solo_alcanza_un_producto_no_muestra_combinaciones():
+    # Audio tiene un único producto (S/ 95): sin pareja no hay combinación.
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value(["audio"]).run()
+    assert ok(at)
+    assert not [m for m in at.markdown if m.value.startswith("**Opción")]
+    assert "al menos 2 productos" in at.warning[0].value
+
+
+def test_una_sola_categoria_combina_dos_productos_de_ella():
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value(["perifericos"]).run()
+    opciones = [m.value for m in at.markdown if m.value.startswith("**Opción")]
+    assert opciones == ["**Opción 1 · S/ 165.00** · sobran S/ 35.00", "**Opción 2 · S/ 155.00** · sobran S/ 45.00"]
+
+
+def ofertar(id_producto: str, porcentaje: int) -> None:
+    """Registra una oferta vigente el 05/10/2026 en la base que usa la aplicación."""
+    from interfaz import comun
+    from ventas.ofertas import Oferta
+
+    comun.repositorio().guardar_oferta(Oferta(id_producto, porcentaje, date(2026, 10, 1), date(2026, 10, 31)))
+
+
+def test_las_ofertas_vigentes_se_sugieren_primero_en_el_pedido():
+    abrir("pedido")
+    ofertar("p002", 50)  # mouse: 45 -> 22.50
+    at = abrir("pedido")
+    opciones = [m.value for m in at.markdown if m.value.startswith("**Opción")]
+    assert opciones[:2] == ["**Opción 1 · S/ 107.50** · sobran S/ 92.50", "**Opción 2 · S/ 82.50** · sobran S/ 117.50"]
+    filas = [m.value for m in at.markdown if 'class="prod"' in m.value]
+    assert filas_de_producto(filas[0]) == [("Mouse inalámbrico", "S/ 22.50"), ("Mochila para laptop", "S/ 85.00")]
+    assert "Oferta -50 % · antes S/ 45.00" in filas[0]
+    assert any("En oferta" in m.value and "Ahorras S/ 22.50" in m.value for m in at.markdown)
+
+
+def test_una_oferta_vencida_no_cambia_el_pedido():
+    from interfaz import comun
+    from ventas.ofertas import Oferta
+
+    abrir("pedido")
+    comun.repositorio().guardar_oferta(Oferta("p002", 50, date(2026, 9, 1), date(2026, 9, 30)))
+    opciones = [m.value for m in abrir("pedido").markdown if m.value.startswith("**Opción")]
+    assert opciones[0] == "**Opción 1 · S/ 195.00** · sobran S/ 5.00"
+
+
+def test_ofertas_de_otras_categorias_se_sugieren():
+    abrir("pedido")
+    ofertar("p005", 20)  # auriculares (audio), no elegida por defecto
+    at = abrir("pedido")
+    assert any("Auriculares con micrófono (-20 %)" in i.value for i in at.info)
+
+
 def test_sin_categorias_pide_elegir_al_menos_una():
     at = abrir("pedido")
     at.get("button_group")[0].set_value([]).run()
     assert ok(at)
     assert any("Elige al menos una categoría" in i.value for i in at.info)
+
+
+# =====================================================================
+# Asesoría: ofertas de temporada
+# =====================================================================
+def poner_oferta(at: AppTest, id_producto: str, porcentaje: int) -> AppTest:
+    at.selectbox(key="of_0_producto").set_value(id_producto).run()
+    at.number_input(key="of_0_porcentaje").set_value(porcentaje).run()
+    return boton(at, "Guardar oferta").click().run()
+
+
+def test_ofertas_proponen_la_temporada_que_viene():
+    at = abrir("ofertas")
+    assert at.selectbox(key="temporada_oferta").value == "fin_de_anio"  # referencia: 05/10/2026
+    assert len(tabla(at)) == 10
+    assert any("Todavía no hay ofertas" in i.value for i in at.info)
+
+
+def test_la_tabla_de_temporada_sugiere_que_ofertar():
+    at = abrir("ofertas")
+    at.selectbox(key="temporada_oferta").set_value("fiestas_patrias").run()
+    sugerencias = set(tabla(at)["Sugerencia"])
+    assert sugerencias <= {
+        "Pico de temporada: oferta gancho",
+        "Baja rotación: oferta para mover stock",
+        "Estable",
+        "Sin ventas registradas",
+    }
+    assert "Pico de temporada: oferta gancho" in sugerencias
+
+
+def test_filtrar_la_temporada_por_categoria():
+    at = abrir("ofertas")
+    at.selectbox(key="categoria_oferta").set_value("perifericos").run()
+    assert sorted(tabla(at)["Producto"]) == ["Mouse inalámbrico", "Teclado mecánico", "Webcam HD"]
+
+
+def test_guardar_una_oferta_y_verla_registrada():
+    at = poner_oferta(abrir("ofertas"), "p002", 20)
+    assert ok(at) and "Oferta guardada: Mouse inalámbrico con 20 % de descuento." in exito(at)
+    html = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
+    assert ("Mouse inalámbrico", "S/ 36.00") in filas_de_producto(html)  # 45 - 20 %
+    assert "Programada" in html  # empieza el 01/11/2026
+    assert "-20 %" in list(tabla(at)["Oferta"])
+
+
+def test_quitar_una_oferta():
+    at = poner_oferta(abrir("ofertas"), "p002", 20)
+    boton(at, "Quitar").click().run()
+    assert ok(at) and "Oferta de Mouse inalámbrico quitada." in exito(at)
+    assert any("Todavía no hay ofertas" in i.value for i in at.info)
 
 
 # =====================================================================
@@ -531,6 +637,7 @@ def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
     [
         ("agenda", "Asesoría", "Agenda de hoy"),
         ("pedido", "Asesoría · modo mostrador", "Arma mi pedido"),
+        ("ofertas", "Asesoría", "Ofertas de temporada"),
         ("resumen", "Administración", "Resumen del negocio"),
         ("clientes", "Administración", "Clientes"),
         ("productos", "Administración", "Productos"),

@@ -15,6 +15,8 @@ from ventas.administracion import (
     limpiar_nombre,
     normalizar_categoria,
     normalizar_telefono,
+    poner_oferta,
+    quitar_oferta,
     registrar_venta,
     sembrar,
 )
@@ -23,7 +25,7 @@ from ventas.logico import PuenteProlog
 from ventas.repositorio import RepositorioSQLite
 from ventas.servicio import construir_tarjetas
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 
@@ -340,3 +342,29 @@ def test_un_producto_nuevo_se_puede_recomendar_tras_venderse(repo):
     tarjetas = construir_tarjetas(repo.cargar_todo(), HOY, motor)
     recomendados = {r.id_producto for t in tarjetas for r in t.recomendaciones}
     assert nuevo.id_producto in recomendados
+
+
+# =====================================================================
+# Ofertas
+# =====================================================================
+def test_poner_oferta_a_un_producto(repo):
+    oferta = poner_oferta(repo, "p002", 15.0, date(2026, 11, 1), date(2026, 12, 31))
+    assert oferta.porcentaje == 15 and isinstance(oferta.porcentaje, int)
+    assert repo.cargar_ofertas() == (oferta,)
+
+
+def test_no_se_ofertan_productos_que_no_existen(repo):
+    with pytest.raises(ErrorDatos, match="No existe el producto p999"):
+        poner_oferta(repo, "p999", 10, date(2026, 11, 1), date(2026, 11, 30))
+
+
+def test_oferta_con_porcentaje_fuera_de_rango_no_se_guarda(repo):
+    with pytest.raises(ValueError, match="entre 1 y 90"):
+        poner_oferta(repo, "p002", 95, date(2026, 11, 1), date(2026, 11, 30))
+    assert repo.cargar_ofertas() == ()
+
+
+def test_quitar_oferta(repo):
+    poner_oferta(repo, "p002", 15, date(2026, 11, 1), date(2026, 12, 31))
+    quitar_oferta(repo, "p002")
+    assert repo.cargar_ofertas() == ()

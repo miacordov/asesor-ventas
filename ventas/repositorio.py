@@ -16,6 +16,7 @@ from datetime import date
 
 from ventas.cargador import Datos, ErrorDatos
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
+from ventas.ofertas import Oferta
 
 _TABLAS = {"c": ("clientes", "id_cliente"), "p": ("productos", "id_producto"), "v": ("ventas", "id_venta")}
 
@@ -38,6 +39,12 @@ CREATE TABLE IF NOT EXISTS ventas (
     cantidad        INTEGER NOT NULL CHECK (cantidad >= 1),
     precio_centavos INTEGER NOT NULL CHECK (precio_centavos > 0),
     fecha           TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ofertas (
+    id_producto TEXT PRIMARY KEY REFERENCES productos (id_producto) ON DELETE CASCADE,
+    porcentaje  INTEGER NOT NULL CHECK (porcentaje BETWEEN 1 AND 90),
+    desde       TEXT NOT NULL,
+    hasta       TEXT NOT NULL CHECK (hasta >= desde)
 );
 """
 
@@ -84,6 +91,16 @@ class Repositorio(ABC):
 
     @abstractmethod
     def eliminar_venta(self, id_venta: str) -> None: ...
+
+    @abstractmethod
+    def cargar_ofertas(self) -> tuple[Oferta, ...]: ...
+
+    @abstractmethod
+    def guardar_oferta(self, oferta: Oferta) -> None:
+        """Crea la oferta del producto o reemplaza la que tenía (una por producto)."""
+
+    @abstractmethod
+    def eliminar_oferta(self, id_producto: str) -> None: ...
 
 
 class RepositorioSQLite(Repositorio):
@@ -143,7 +160,7 @@ class RepositorioSQLite(Repositorio):
         """Sustituye todo el contenido en una sola transacción (todo o nada)."""
         try:
             with self._candado, self._con:
-                for tabla in ("ventas", "clientes", "productos"):
+                for tabla in ("ofertas", "ventas", "clientes", "productos"):
                     self._con.execute(f"DELETE FROM {tabla}")
                 self._con.executemany(
                     "INSERT INTO clientes VALUES (?, ?, ?)",
@@ -225,6 +242,26 @@ class RepositorioSQLite(Repositorio):
     def eliminar_venta(self, id_venta: str) -> None:
         if not self._ejecutar("DELETE FROM ventas WHERE id_venta = ?", (id_venta,), f"la venta {id_venta}"):
             raise ErrorDatos(f"No existe la venta {id_venta}.")
+
+    # ---------- ofertas ----------
+    def cargar_ofertas(self) -> tuple[Oferta, ...]:
+        with self._candado:
+            filas = self._con.execute(
+                "SELECT id_producto, porcentaje, desde, hasta FROM ofertas ORDER BY id_producto"
+            ).fetchall()
+        return tuple(Oferta(i, p, date.fromisoformat(d), date.fromisoformat(h)) for i, p, d, h in filas)
+
+    def guardar_oferta(self, oferta: Oferta) -> None:
+        self._ejecutar(
+            "INSERT INTO ofertas VALUES (?, ?, ?, ?) ON CONFLICT (id_producto) DO UPDATE SET "
+            "porcentaje = excluded.porcentaje, desde = excluded.desde, hasta = excluded.hasta",
+            (oferta.id_producto, oferta.porcentaje, oferta.desde.isoformat(), oferta.hasta.isoformat()),
+            f"la oferta del producto {oferta.id_producto}",
+        )
+
+    def eliminar_oferta(self, id_producto: str) -> None:
+        if not self._ejecutar("DELETE FROM ofertas WHERE id_producto = ?", (id_producto,), "la oferta"):
+            raise ErrorDatos(f"El producto {id_producto} no tiene oferta.")
 
     def _eliminar(self, tabla: str, columna: str, valor: str, tabla_hija: str, nombre: str) -> None:
         with self._candado:
