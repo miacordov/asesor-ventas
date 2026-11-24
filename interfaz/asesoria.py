@@ -13,6 +13,11 @@ from ventas.pedido import armar_pedido_manual
 from ventas.servicio import TarjetaAgenda, construir_tarjetas
 
 TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
+MOTIVOS_OFERTA = {
+    "similares": "La compraron clientes con compras parecidas",
+    "categoria_habitual": "Es de una categoría que suele comprar",
+    "cliente_frecuente": "Compra seguido",
+}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
@@ -29,9 +34,10 @@ def pagina_agenda() -> None:
     datos, hoy = comun.datos(), comun.fecha_referencia()
     if not comun.fecha_valida(datos, hoy):
         return
+    vigentes = ofertas_vigentes(comun.ofertas(), hoy)
     motor, candado = comun.motor_y_candado()
     with candado:
-        tarjetas = construir_tarjetas(datos, hoy, motor)
+        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes)
     if not tarjetas:
         st.info(
             "Todavía no hay clientes para contactar. Registra ventas en Administración › Ventas "
@@ -85,7 +91,8 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
         st.markdown(
             estilo.chip(accion.titulo(), TONO_PRIORIDAD[accion.prioridad])
             + estilo.chip(f"Prioridad {accion.prioridad}")
-            + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular"),
+            + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular")
+            + (estilo.chip("Oferta para este cliente", "ok") if t.ofertas else ""),
             unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
@@ -109,6 +116,22 @@ def filas_html(productos) -> str:
     return "".join(estilo.fila_producto(p.nombre, p.categoria, dinero(p.precio), nombre_categoria(p.categoria)) for p in productos)
 
 
+def filas_sugerido_html(sugerido) -> str:
+    """Filas del pedido sugerido; las que traen oferta dicen hasta cuándo vale."""
+    oferta_de = {o.id_producto: o for o in sugerido.ofertas_incluidas}
+    return "".join(
+        estilo.fila_producto(
+            p.nombre,
+            p.categoria,
+            dinero(p.precio),
+            f"Oferta -{oferta_de[p.id_producto].porcentaje} % hasta el {oferta_de[p.id_producto].hasta:%d/%m/%Y}"
+            if p.id_producto in oferta_de
+            else nombre_categoria(p.categoria),
+        )
+        for p in sugerido.pedido.productos
+    )
+
+
 def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
     if not t.pedidos:
         st.caption("No hay una combinación de al menos 2 productos dentro del presupuesto habitual de este cliente.")
@@ -123,7 +146,7 @@ def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
     else:
         cierre = estilo.total("Total", dinero(total))
     st.markdown(
-        '<div class="pedido-titulo">Pedido sugerido</div>' + filas_html(mejor.pedido.productos) + cierre,
+        '<div class="pedido-titulo">Pedido sugerido</div>' + filas_sugerido_html(mejor) + cierre,
         unsafe_allow_html=True,
     )
     if len(t.pedidos) > 1:
@@ -138,6 +161,22 @@ def mostrar_por_que(t: TarjetaAgenda) -> None:
         f"Frecuente: {UMBRAL_FRECUENTE} compras o más. "
         f"Inactivo: más de {DIAS_INACTIVIDAD} días sin comprar."
     )
+    if t.ofertas:
+        st.markdown("**Ofertas pensadas para este cliente**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Producto": o.producto.nombre,
+                        "Descuento": f"-{o.oferta.porcentaje} %",
+                        "Hasta": f"{o.oferta.hasta:%d/%m/%Y}",
+                        "Por qué": "; ".join(MOTIVOS_OFERTA[m] for m in o.motivos),
+                    }
+                    for o in t.ofertas
+                ]
+            ),
+            hide_index=True,
+        )
     if not t.recomendaciones:
         st.info("Por ahora no hay productos que recomendar a este cliente.")
         return

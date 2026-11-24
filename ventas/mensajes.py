@@ -10,7 +10,7 @@ WhatsApp con el mensaje escrito. El vendedor decide si lo envía.
 """
 
 import re
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import quote
@@ -18,7 +18,8 @@ from urllib.parse import quote
 from ventas.agenda import EntradaAgenda
 from ventas.funcional import PerfilCliente, clasificar_cliente
 from ventas.modelos import Cliente, Producto, Recomendacion, _validar_id, _validar_texto
-from ventas.pedido import PedidoSugerido, pedidos_para_cliente
+from ventas.ofertas import Oferta
+from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
 
 # Formato internacional de WhatsApp: solo dígitos, sin "+", sin cero inicial, hasta 15.
 _PATRON_TELEFONO = re.compile(r"^[1-9]\d{7,14}$")
@@ -78,6 +79,16 @@ def primer_nombre(nombre: str) -> str:
     return nombre.split()[0]
 
 
+def frase_descuentos_temporada(pedido: PedidoSugerido) -> str:
+    """'Aprovecha: X con 20 % de descuento hasta el 31/10/2026.' ('' sin ofertas)."""
+    nombre_de = {p.id_producto: p.nombre for p in pedido.pedido.productos}
+    detalles = [
+        f"{nombre_de[o.id_producto]} con {o.porcentaje} % de descuento hasta el {o.hasta:%d/%m/%Y}"
+        for o in pedido.ofertas_incluidas
+    ]
+    return f"Aprovecha: {enumerar(detalles)}." if detalles else ""
+
+
 def frase_oferta(
     cliente: Cliente,
     pedido: PedidoSugerido | None,
@@ -85,18 +96,24 @@ def frase_oferta(
 ) -> str:
     """La parte del mensaje con la propuesta ('' si no hay nada que ofrecer)."""
     if pedido is not None:
-        lista = enumerar([p.nombre for p in pedido.pedido.productos])
-        subtotal, total = pedido.pedido.subtotal, pedido.total_con_descuento
-        if total < subtotal:
-            porcentaje = round(cliente.descuento() * 100)
-            return (
-                f"Te armamos esta propuesta: {lista} por {dinero(subtotal)} "
-                f"({dinero(total)} con tu descuento del {porcentaje} %)."
-            )
-        return f"Te armamos esta propuesta: {lista} por {dinero(total)}."
+        propuesta = _frase_pedido(cliente, pedido)
+        extra = frase_descuentos_temporada(pedido)
+        return f"{propuesta} {extra}" if extra else propuesta
     if recomendados:
         return f"Creemos que te pueden interesar: {enumerar(list(recomendados))}."
     return ""
+
+
+def _frase_pedido(cliente: Cliente, pedido: PedidoSugerido) -> str:
+    lista = enumerar([p.nombre for p in pedido.pedido.productos])
+    subtotal, total = pedido.pedido.subtotal, pedido.total_con_descuento
+    if total < subtotal:
+        porcentaje = round(cliente.descuento() * 100)
+        return (
+            f"Te armamos esta propuesta: {lista} por {dinero(subtotal)} "
+            f"({dinero(total)} con tu descuento del {porcentaje} %)."
+        )
+    return f"Te armamos esta propuesta: {lista} por {dinero(total)}."
 
 
 # Una plantilla por tipo de acción: (saludo, cierre).
@@ -162,20 +179,34 @@ def mensajes_para_agenda(
     clientes: Iterable[Cliente],
     productos: Iterable[Producto],
     motor: MotorAsesor,
+    vigentes: Mapping[str, Oferta] | None = None,
+    ventas: Iterable = (),
 ) -> tuple[Mensaje, ...]:
-    """Un mensaje por cada entrada de la agenda, en el mismo orden.
+    """Un mensaje por cada entrada de la agenda, en el mismo orden. Con ofertas
+    vigentes, el pedido propuesto las prioriza (y el mensaje las menciona);
+    `ventas` evita ofertarle a un cliente algo que ya compró.
 
     Precondición: el motor ya tiene las compras cargadas (construir_agenda lo hace).
     """
     por_id = {c.id_cliente: c for c in clientes}
     productos = tuple(productos)
     nombre_de = {p.id_producto: p.nombre for p in productos}
+    ventas = tuple(ventas)
     mensajes = []
     for entrada in agenda:
         base = por_id[entrada.accion.id_cliente]
         cliente = clasificar_cliente(base, entrada.perfil)
         recomendaciones = motor.recomendar(cliente.id_cliente)
-        sugeridos = pedidos_para_cliente(cliente, entrada.perfil, recomendaciones, productos, motor, n=1)
+        sugeridos = pedidos_para_cliente(
+            cliente,
+            entrada.perfil,
+            recomendaciones,
+            productos,
+            motor,
+            n=1,
+            vigentes=vigentes,
+            comprados=productos_comprados(ventas, cliente.id_cliente),
+        )
         texto = redactar_mensaje(
             entrada.accion.tipo,
             cliente,

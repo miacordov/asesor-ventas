@@ -275,6 +275,19 @@ def ofertar(id_producto: str, porcentaje: int) -> None:
     comun.repositorio().guardar_oferta(Oferta(id_producto, porcentaje, date(2026, 10, 1), date(2026, 10, 31)))
 
 
+def test_la_agenda_propone_las_ofertas_a_sus_clientes():
+    abrir()
+    ofertar("p005", 20)  # auriculares: 95 -> 76, hasta el 31/10/2026
+    at = abrir()
+    assert ok(at)
+    html = " ".join(m.value for m in at.markdown)
+    assert "Oferta para este cliente" in html
+    assert "Oferta -20 % hasta el 31/10/2026" in html
+    assert ("Auriculares con micrófono", "S/ 76.00") in filas_de_producto(html)
+    textos = [parse_qs(urlparse(b.proto.url).query)["text"][0] for b in at.get("link_button")]
+    assert any("Auriculares con micrófono con 20 % de descuento hasta el 31/10/2026" in t for t in textos)
+
+
 def test_las_ofertas_vigentes_se_sugieren_primero_en_el_pedido():
     abrir("pedido")
     ofertar("p002", 50)  # mouse: 45 -> 22.50

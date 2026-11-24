@@ -7,6 +7,7 @@ import pytest
 from ventas.cargador import cargar_todo
 from ventas.logico import PuenteProlog
 from ventas.modelos import ClienteFrecuente, ClienteRegular
+from ventas.ofertas import Oferta
 from ventas.servicio import clientes_con_perfil, construir_tarjetas, resumen_ventas
 
 DATOS = Path(__file__).resolve().parent / "datos"
@@ -218,3 +219,34 @@ def test_describir_cambio_agenda(antes, despues, esperado):
     from ventas.servicio import describir_cambio_agenda
 
     assert describir_cambio_agenda("Juan Pérez", antes, despues) == esperado
+
+
+# =====================================================================
+# Ofertas en la agenda
+# =====================================================================
+AURICULARES_OCTUBRE = {"p005": Oferta("p005", 20, date(2026, 10, 1), date(2026, 10, 31))}  # 95 -> 76
+
+
+def test_las_tarjetas_traen_las_ofertas_de_cada_cliente(datos, motor):
+    tarjetas = construir_tarjetas(datos, HOY, motor, vigentes=AURICULARES_OCTUBRE)
+    compraron = {v.id_cliente for v in datos.ventas if v.id_producto == "p005"}
+    for t in tarjetas:
+        ids = [o.id_producto for o in t.ofertas]
+        if isinstance(t.cliente, ClienteFrecuente) and t.cliente.id_cliente not in compraron:
+            assert ids == ["p005"] and "cliente_frecuente" in t.ofertas[0].motivos
+        if t.cliente.id_cliente in compraron:
+            assert ids == []
+
+
+def test_el_pedido_y_el_mensaje_priorizan_la_oferta(datos, motor):
+    tarjetas = construir_tarjetas(datos, HOY, motor, vigentes=AURICULARES_OCTUBRE)
+    con_oferta = [t for t in tarjetas if t.pedidos and t.pedidos[0].ofertas_incluidas]
+    assert con_oferta
+    for t in con_oferta:
+        auriculares = next(p for p in t.pedidos[0].pedido.productos if p.id_producto == "p005")
+        assert auriculares.precio == 76.0
+        assert "Auriculares con micrófono con 20 % de descuento hasta el 31/10/2026" in t.mensaje.texto
+
+
+def test_sin_ofertas_la_agenda_no_cambia(datos, motor, tarjetas):
+    assert construir_tarjetas(datos, HOY, motor, vigentes={}) == tarjetas

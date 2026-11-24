@@ -14,7 +14,8 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from datetime import date
 
-from ventas.modelos import Producto, Venta, _validar_id
+from ventas.funcional import PerfilCliente
+from ventas.modelos import Producto, Recomendacion, Venta, _validar_id
 
 PORCENTAJE_MINIMO = 1
 PORCENTAJE_MAXIMO = 90
@@ -117,6 +118,19 @@ class DesempenoTemporada:
         return "estable"
 
 
+@dataclass(frozen=True)
+class OfertaParaCliente:
+    """Una oferta vigente que tiene sentido proponerle a un cliente, y por qué."""
+
+    oferta: Oferta
+    producto: Producto
+    motivos: tuple[str, ...]  # "similares", "categoria_habitual", "cliente_frecuente"
+
+    @property
+    def id_producto(self) -> str:
+        return self.producto.id_producto
+
+
 # ---------------------------------------------------------------------
 # Funciones puras
 # ---------------------------------------------------------------------
@@ -178,3 +192,41 @@ def aplicar_ofertas(productos: Iterable[Producto], vigentes: Mapping[str, Oferta
         replace(p, precio=vigentes[p.id_producto].precio(p.precio)) if p.id_producto in vigentes else p
         for p in productos
     )
+
+
+def ofertas_para_cliente(
+    vigentes: Mapping[str, Oferta],
+    productos: Iterable[Producto],
+    perfil: PerfilCliente,
+    recomendaciones: Iterable[Recomendacion],
+    frecuente: bool,
+    comprados: Iterable[str] = (),
+) -> tuple[OfertaParaCliente, ...]:
+    """Las ofertas vigentes que le corresponden al cliente, nunca de algo que ya compró:
+
+      * similares:          la compraron clientes con compras parecidas (motor Prolog);
+      * categoria_habitual: es de una categoría que el cliente compra;
+      * cliente_frecuente:  a quien compra seguido se le ofrecen todas.
+
+    Orden: más motivos primero; luego mayor descuento.
+    """
+    recomendados = {r.id_producto for r in recomendaciones}
+    habituales = set(perfil.categorias_habituales)
+    comprados = set(comprados)
+    resultado = []
+    for producto in productos:
+        oferta = vigentes.get(producto.id_producto)
+        if oferta is None or producto.id_producto in comprados:
+            continue
+        motivos = tuple(
+            motivo
+            for motivo, aplica in (
+                ("similares", producto.id_producto in recomendados),
+                ("categoria_habitual", producto.categoria in habituales),
+                ("cliente_frecuente", frecuente),
+            )
+            if aplica
+        )
+        if motivos:
+            resultado.append(OfertaParaCliente(oferta, producto, motivos))
+    return tuple(sorted(resultado, key=lambda o: (-len(o.motivos), -o.oferta.porcentaje, o.id_producto)))
