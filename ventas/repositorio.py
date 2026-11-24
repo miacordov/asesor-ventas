@@ -17,6 +17,7 @@ from datetime import date
 from ventas.cargador import Datos, ErrorDatos
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
+from ventas.propuestas import LineaPropuesta, Propuesta
 
 _TABLAS = {"c": ("clientes", "id_cliente"), "p": ("productos", "id_producto"), "v": ("ventas", "id_venta")}
 
@@ -45,6 +46,19 @@ CREATE TABLE IF NOT EXISTS ofertas (
     porcentaje  INTEGER NOT NULL CHECK (porcentaje BETWEEN 1 AND 90),
     desde       TEXT NOT NULL,
     hasta       TEXT NOT NULL CHECK (hasta >= desde)
+);
+CREATE TABLE IF NOT EXISTS propuestas (
+    id_cliente TEXT PRIMARY KEY REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+    descuento  INTEGER NOT NULL CHECK (descuento BETWEEN 0 AND 90),
+    fecha      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS propuesta_productos (
+    id_cliente             TEXT NOT NULL REFERENCES propuestas (id_cliente) ON DELETE CASCADE,
+    id_producto            TEXT NOT NULL REFERENCES productos (id_producto) ON DELETE CASCADE,
+    orden                  INTEGER NOT NULL,
+    precio_normal_centavos INTEGER NOT NULL CHECK (precio_normal_centavos > 0),
+    precio_centavos        INTEGER NOT NULL CHECK (precio_centavos > 0),
+    PRIMARY KEY (id_cliente, id_producto)
 );
 """
 
@@ -101,6 +115,16 @@ class Repositorio(ABC):
 
     @abstractmethod
     def eliminar_oferta(self, id_producto: str) -> None: ...
+
+    @abstractmethod
+    def cargar_propuestas(self) -> tuple[Propuesta, ...]: ...
+
+    @abstractmethod
+    def guardar_propuesta(self, propuesta: Propuesta) -> None:
+        """Guarda la propuesta del cliente o reemplaza la que tenía (una por cliente)."""
+
+    @abstractmethod
+    def eliminar_propuesta(self, id_cliente: str) -> None: ...
 
 
 class RepositorioSQLite(Repositorio):
@@ -160,7 +184,7 @@ class RepositorioSQLite(Repositorio):
         """Sustituye todo el contenido en una sola transacción (todo o nada)."""
         try:
             with self._candado, self._con:
-                for tabla in ("ofertas", "ventas", "clientes", "productos"):
+                for tabla in ("propuesta_productos", "propuestas", "ofertas", "ventas", "clientes", "productos"):
                     self._con.execute(f"DELETE FROM {tabla}")
                 self._con.executemany(
                     "INSERT INTO clientes VALUES (?, ?, ?)",
@@ -262,6 +286,46 @@ class RepositorioSQLite(Repositorio):
     def eliminar_oferta(self, id_producto: str) -> None:
         if not self._ejecutar("DELETE FROM ofertas WHERE id_producto = ?", (id_producto,), "la oferta"):
             raise ErrorDatos(f"El producto {id_producto} no tiene oferta.")
+
+    # ---------- propuestas ----------
+    def cargar_propuestas(self) -> tuple[Propuesta, ...]:
+        """Las propuestas guardadas. Si al borrar productos una quedó con menos de
+        2, ya no es un combo y no se devuelve."""
+        with self._candado:
+            cabeceras = self._con.execute("SELECT id_cliente, descuento, fecha FROM propuestas ORDER BY fecha, id_cliente").fetchall()
+            lineas = self._con.execute(
+                "SELECT id_cliente, id_producto, precio_normal_centavos, precio_centavos FROM propuesta_productos ORDER BY id_cliente, orden"
+            ).fetchall()
+        por_cliente: dict[str, list[LineaPropuesta]] = {}
+        for id_cliente, id_producto, normal, precio in lineas:
+            por_cliente.setdefault(id_cliente, []).append(LineaPropuesta(id_producto, normal / 100, precio / 100))
+        return tuple(
+            Propuesta(c, tuple(por_cliente[c]), d, date.fromisoformat(f))
+            for c, d, f in cabeceras
+            if len(por_cliente.get(c, ())) >= 2
+        )
+
+    def guardar_propuesta(self, propuesta: Propuesta) -> None:
+        try:
+            with self._candado, self._con:
+                self._con.execute("DELETE FROM propuestas WHERE id_cliente = ?", (propuesta.id_cliente,))
+                self._con.execute(
+                    "INSERT INTO propuestas VALUES (?, ?, ?)",
+                    (propuesta.id_cliente, propuesta.descuento, propuesta.fecha.isoformat()),
+                )
+                self._con.executemany(
+                    "INSERT INTO propuesta_productos VALUES (?, ?, ?, ?, ?)",
+                    [
+                        (propuesta.id_cliente, linea.id_producto, orden, _centavos(linea.precio_normal), _centavos(linea.precio))
+                        for orden, linea in enumerate(propuesta.lineas)
+                    ],
+                )
+        except sqlite3.IntegrityError as error:
+            raise ErrorDatos(_traducir(error, f"la propuesta para {propuesta.id_cliente}")) from error
+
+    def eliminar_propuesta(self, id_cliente: str) -> None:
+        if not self._ejecutar("DELETE FROM propuestas WHERE id_cliente = ?", (id_cliente,), "la propuesta"):
+            raise ErrorDatos(f"El cliente {id_cliente} no tiene una propuesta guardada.")
 
     def _eliminar(self, tabla: str, columna: str, valor: str, tabla_hija: str, nombre: str) -> None:
         with self._candado:

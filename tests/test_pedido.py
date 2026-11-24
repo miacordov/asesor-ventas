@@ -10,7 +10,7 @@ from ventas.cargador import cargar_todo
 from ventas.funcional import PerfilCliente, clasificar_clientes, perfiles
 from ventas.logico import MotorLogico, MotorPedidos, PuenteProlog
 from ventas.modelos import ClienteFrecuente, ClienteRegular, Producto, Recomendacion
-from ventas.ofertas import Oferta
+from ventas.ofertas import Oferta, ofertas_para_cliente
 from ventas.pedido import (
     Pedido,
     armar_pedido_manual,
@@ -476,3 +476,75 @@ def test_mas_ofertas_en_la_combinacion_la_suben_mas(datos, motor):
     }
     (primero, *_) = armar_pedido_manual(motor, datos.productos, 200, ["perifericos", "accesorios"], vigentes=vigentes)
     assert primero.ids == ("p002", "p009") and primero.subtotal == 76.5
+
+
+# =====================================================================
+# Ofertas en los pedidos sugeridos de la agenda
+# =====================================================================
+OCTUBRE = (date(2026, 10, 1), date(2026, 10, 31))
+CATALOGO_AB = [
+    Producto("p001", "A barato", "a", 10.0),
+    Producto("p002", "A caro", "a", 30.0),
+    Producto("p003", "B normal", "b", 20.0),
+    Producto("p004", "B en oferta", "b", 25.0),
+]
+PERFIL_A = PerfilCliente("c001", 1, date(2026, 9, 1), 4, 50.0, 50.0, ("a",))  # presupuesto 55
+REC_P001 = (Recomendacion("c001", "p001", soporte=1, confianza=0.5),)
+OFERTA_P004 = {"p004": Oferta("p004", 30, *OCTUBRE)}  # 25 -> 17.50
+
+
+def sugeridos_ab(cliente, vigentes, perfil=PERFIL_A, recs=REC_P001, n=3):
+    puente = PuenteProlog()
+    puente.cargar_compras([])
+    return pedidos_para_cliente(cliente, perfil, recs, CATALOGO_AB, puente, n=n, vigentes=vigentes)
+
+
+def test_una_oferta_sin_relacion_con_el_cliente_no_se_le_empuja():
+    # Regular, compra la categoría a y su recomendado es p001: la oferta de b no le corresponde.
+    resultado = sugeridos_ab(ClienteRegular("c001", "Juan"), OFERTA_P004)
+    assert [s.pedido.ids for s in resultado] == [("p001", "p002")]
+    assert resultado[0].ofertas_incluidas == ()
+
+
+def test_al_cliente_frecuente_se_le_priorizan_las_ofertas():
+    # Presupuesto 55. Primero las parejas con la oferta (p004 = 17.50), y entre ellas
+    # la que lleva el recomendado p001; luego las demás por puntaje.
+    resultado = sugeridos_ab(ClienteFrecuente("c001", "Juan"), OFERTA_P004)
+    assert [(s.pedido.ids, s.pedido.subtotal) for s in resultado] == [
+        (("p001", "p004"), 27.5),
+        (("p002", "p004"), 47.5),
+        (("p001", "p003"), 30.0),
+    ]
+    assert [o.id_producto for o in resultado[0].ofertas_incluidas] == ["p004"]
+    assert resultado[0].total_con_descuento == 24.75  # además, su 10 % de cliente frecuente
+
+
+def test_oferta_en_una_categoria_que_el_cliente_compra():
+    perfil = PerfilCliente("c001", 1, date(2026, 9, 1), 4, 50.0, 50.0, ("b",))
+    resultado = sugeridos_ab(ClienteRegular("c001", "Juan"), OFERTA_P004, perfil=perfil)
+    assert resultado[0].pedido.ids == ("p001", "p004")
+
+
+def test_sin_recomendaciones_pero_con_ofertas_para_el_cliente_igual_se_sugiere():
+    resultado = sugeridos_ab(ClienteFrecuente("c001", "Juan"), OFERTA_P004, recs=())
+    assert resultado and all("p004" in s.pedido.ids for s in resultado[:2])
+
+
+def test_ofertas_para_cliente_y_sus_motivos():
+    vigentes = {
+        "p001": Oferta("p001", 10, *OCTUBRE),  # recomendado: lo compraron clientes parecidos
+        "p002": Oferta("p002", 10, *OCTUBRE),  # categoría a, la que compra
+        "p003": Oferta("p003", 10, *OCTUBRE),  # categoría b: solo por ser frecuente
+        "p004": Oferta("p004", 50, *OCTUBRE),  # ya lo compró: nunca
+    }
+    regular = ofertas_para_cliente(vigentes, CATALOGO_AB, PERFIL_A, REC_P001, frecuente=False, comprados={"p004"})
+    assert [(o.id_producto, o.motivos) for o in regular] == [
+        ("p001", ("similares", "categoria_habitual")),
+        ("p002", ("categoria_habitual",)),
+    ]
+    frecuente = ofertas_para_cliente(vigentes, CATALOGO_AB, PERFIL_A, REC_P001, frecuente=True, comprados={"p004"})
+    assert [(o.id_producto, o.motivos) for o in frecuente] == [
+        ("p001", ("similares", "categoria_habitual", "cliente_frecuente")),
+        ("p002", ("categoria_habitual", "cliente_frecuente")),
+        ("p003", ("cliente_frecuente",)),
+    ]

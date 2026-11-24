@@ -5,6 +5,7 @@ le pide a este servicio tarjetas, tablas y resúmenes ya calculados. Así toda l
 lógica de negocio se prueba sin necesidad de abrir Streamlit.
 """
 
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import date
 
@@ -21,9 +22,16 @@ from ventas.funcional import (
     ventas_por_categoria,
     ventas_por_mes,
 )
-from ventas.mensajes import Mensaje, MotorAsesor, mensajes_para_agenda
-from ventas.modelos import Cliente, Recomendacion
-from ventas.pedido import PedidoSugerido, pedidos_para_cliente
+from ventas.mensajes import (
+    Mensaje,
+    MotorAsesor,
+    mensaje_propuesta,
+    mensajes_para_agenda,
+)
+from ventas.modelos import Cliente, ClienteFrecuente, Recomendacion
+from ventas.ofertas import Oferta, OfertaParaCliente, ofertas_para_cliente
+from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
+from ventas.propuestas import Propuesta
 
 
 @dataclass(frozen=True)
@@ -36,6 +44,8 @@ class TarjetaAgenda:
     clientes_similares: int  # base sobre la que se calculó la confianza
     pedidos: tuple[PedidoSugerido, ...]
     mensaje: Mensaje
+    ofertas: tuple[OfertaParaCliente, ...] = ()  # ofertas vigentes pensadas para este cliente
+    propuesta: Propuesta | None = None  # combo armado a mano: reemplaza al mensaje automático
 
 
 @dataclass(frozen=True)
@@ -50,23 +60,49 @@ class ResumenVentas:
 
 
 def construir_tarjetas(
-    datos: Datos, hoy: date, motor: MotorAsesor, max_pedidos: int = 3
+    datos: Datos,
+    hoy: date,
+    motor: MotorAsesor,
+    max_pedidos: int = 3,
+    vigentes: Mapping[str, Oferta] | None = None,
+    propuestas: Iterable[Propuesta] = (),
 ) -> tuple[TarjetaAgenda, ...]:
-    """Agenda completa del día, lista para mostrar.
+    """Agenda completa del día, lista para mostrar. Las ofertas vigentes se
+    proponen a quien le corresponden y van primero en sus pedidos. Si el
+    vendedor guardó una propuesta para el cliente, su mensaje es el de esa propuesta.
 
     Precondición: nadie más usa el motor mientras se ejecuta (SWI-Prolog es un
     único motor por proceso); la interfaz lo protege con un candado.
     """
     agenda = construir_agenda(datos.clientes, datos.ventas, datos.productos, hoy, motor)
-    mensajes = mensajes_para_agenda(agenda, datos.clientes, datos.productos, motor)
+    vigentes = dict(vigentes or {})
+    mensajes = mensajes_para_agenda(agenda, datos.clientes, datos.productos, motor, vigentes, datos.ventas)
     por_id = {c.id_cliente: c for c in datos.clientes}
+    guardadas = {p.id_cliente: p for p in propuestas}
+    nombres = {p.id_producto: p.nombre for p in datos.productos}
 
     tarjetas = []
     for entrada, mensaje in zip(agenda, mensajes, strict=True):
         cliente = clasificar_cliente(por_id[entrada.accion.id_cliente], entrada.perfil)
         recomendaciones = motor.recomendar(cliente.id_cliente)
+        comprados = productos_comprados(datos.ventas, cliente.id_cliente)
         pedidos = pedidos_para_cliente(
-            cliente, entrada.perfil, recomendaciones, datos.productos, motor, n=max_pedidos
+            cliente,
+            entrada.perfil,
+            recomendaciones,
+            datos.productos,
+            motor,
+            n=max_pedidos,
+            vigentes=vigentes,
+            comprados=comprados,
+        )
+        ofertas = ofertas_para_cliente(
+            vigentes,
+            datos.productos,
+            entrada.perfil,
+            recomendaciones,
+            isinstance(cliente, ClienteFrecuente),
+            comprados,
         )
         tarjetas.append(
             TarjetaAgenda(
@@ -75,10 +111,24 @@ def construir_tarjetas(
                 recomendaciones=recomendaciones,
                 clientes_similares=_clientes_similares(recomendaciones),
                 pedidos=pedidos,
-                mensaje=mensaje,
+                mensaje=_mensaje_de(mensaje, cliente, guardadas.get(cliente.id_cliente), nombres),
+                ofertas=ofertas,
+                propuesta=guardadas.get(cliente.id_cliente),
             )
         )
     return tuple(tarjetas)
+
+
+def _mensaje_de(automatico: Mensaje, cliente: Cliente, propuesta: Propuesta | None, nombres) -> Mensaje:
+    if propuesta is None:
+        return automatico
+    return Mensaje(
+        cliente.id_cliente,
+        cliente.nombre,
+        cliente.telefono,
+        automatico.tipo_accion,
+        mensaje_propuesta(cliente, propuesta, nombres),
+    )
 
 
 def _clientes_similares(recomendaciones: tuple[Recomendacion, ...]) -> int:

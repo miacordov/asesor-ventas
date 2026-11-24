@@ -13,15 +13,20 @@ from ventas.pedido import armar_pedido_manual
 from ventas.servicio import TarjetaAgenda, construir_tarjetas
 
 TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
+MOTIVOS_OFERTA = {
+    "similares": "La compraron clientes con compras parecidas",
+    "categoria_habitual": "Es de una categoría que suele comprar",
+    "cliente_frecuente": "Compra seguido",
+}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
-# Agenda de hoy
+# Agenda de fidelización
 def pagina_agenda() -> None:
     comun.mostrar_aviso()
     estilo.hero(
         "Asesoría",
-        "Agenda de hoy",
+        "Agenda de fidelización",
         "Los clientes a quienes conviene contactar hoy, ordenados por urgencia, con el motivo, "
         "el pedido sugerido y el mensaje listo para enviar.",
         "agenda",
@@ -29,9 +34,10 @@ def pagina_agenda() -> None:
     datos, hoy = comun.datos(), comun.fecha_referencia()
     if not comun.fecha_valida(datos, hoy):
         return
+    vigentes = ofertas_vigentes(comun.ofertas(), hoy)
     motor, candado = comun.motor_y_candado()
     with candado:
-        tarjetas = construir_tarjetas(datos, hoy, motor)
+        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes, propuestas=comun.propuestas())
     if not tarjetas:
         st.info(
             "Todavía no hay clientes para contactar. Registra ventas en Administración › Ventas "
@@ -85,12 +91,17 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
         st.markdown(
             estilo.chip(accion.titulo(), TONO_PRIORIDAD[accion.prioridad])
             + estilo.chip(f"Prioridad {accion.prioridad}")
-            + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular"),
+            + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular")
+            + (estilo.chip("Oferta para este cliente", "ok") if t.ofertas else "")
+            + (estilo.chip("Propuesta lista para enviar", "media") if t.propuesta else ""),
             unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
-        mostrar_pedido_resumido(t)
-        boton_whatsapp, por_que, mensaje = st.columns([1.35, 1, 1])
+        if t.propuesta:
+            mostrar_propuesta_guardada(t)
+        else:
+            mostrar_pedido_resumido(t)
+        boton_whatsapp, por_que, mensaje, personalizar = st.columns([1.35, 1, 1, 1.25])
         if t.mensaje.enlace:
             boton_whatsapp.link_button(
                 "WhatsApp", t.mensaje.enlace, type="primary", icon=":material/chat:", width="stretch"
@@ -103,10 +114,57 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             st.write(t.mensaje.texto)
             if not t.mensaje.enlace:
                 st.caption("Este cliente no tiene teléfono registrado; agrégalo en Administración › Clientes.")
+        if personalizar.button(
+            "Editar propuesta" if t.propuesta else "Personalizar",
+            key=f"personalizar_{t.cliente.id_cliente}",
+            icon=":material/edit_note:",
+            width="stretch",
+        ):
+            st.session_state["propuesta_cliente"] = t.cliente.id_cliente
+            st.switch_page("paginas/propuesta.py")
 
 
 def filas_html(productos) -> str:
     return "".join(estilo.fila_producto(p.nombre, p.categoria, dinero(p.precio), nombre_categoria(p.categoria)) for p in productos)
+
+
+def filas_sugerido_html(sugerido) -> str:
+    """Filas del pedido sugerido; las que traen oferta dicen hasta cuándo vale."""
+    oferta_de = {o.id_producto: o for o in sugerido.ofertas_incluidas}
+    return "".join(
+        estilo.fila_producto(
+            p.nombre,
+            p.categoria,
+            dinero(p.precio),
+            f"Oferta -{oferta_de[p.id_producto].porcentaje} % hasta el {oferta_de[p.id_producto].hasta:%d/%m/%Y}"
+            if p.id_producto in oferta_de
+            else nombre_categoria(p.categoria),
+        )
+        for p in sugerido.pedido.productos
+    )
+
+
+def mostrar_propuesta_guardada(t: TarjetaAgenda) -> None:
+    """El combo armado a mano reemplaza al pedido sugerido en la tarjeta."""
+    p = t.propuesta
+    por_id = {x.id_producto: x for x in comun.datos().productos}
+    filas = "".join(
+        estilo.fila_producto(
+            por_id[linea.id_producto].nombre,
+            por_id[linea.id_producto].categoria,
+            dinero(linea.precio),
+            f"Oferta · antes {dinero(linea.precio_normal)}" if linea.en_oferta else nombre_categoria(por_id[linea.id_producto].categoria),
+        )
+        for linea in p.lineas
+    )
+    if p.descuento:
+        cierre = estilo.total("Total", dinero(p.total), tachado=dinero(p.subtotal), nota=f"{p.descuento} % de descuento al combo")
+    else:
+        cierre = estilo.total("Total", dinero(p.total))
+    st.markdown(
+        f'<div class="pedido-titulo">Propuesta guardada el {p.fecha:%d/%m/%Y}</div>' + filas + cierre,
+        unsafe_allow_html=True,
+    )
 
 
 def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
@@ -123,7 +181,7 @@ def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
     else:
         cierre = estilo.total("Total", dinero(total))
     st.markdown(
-        '<div class="pedido-titulo">Pedido sugerido</div>' + filas_html(mejor.pedido.productos) + cierre,
+        '<div class="pedido-titulo">Pedido sugerido</div>' + filas_sugerido_html(mejor) + cierre,
         unsafe_allow_html=True,
     )
     if len(t.pedidos) > 1:
@@ -138,6 +196,22 @@ def mostrar_por_que(t: TarjetaAgenda) -> None:
         f"Frecuente: {UMBRAL_FRECUENTE} compras o más. "
         f"Inactivo: más de {DIAS_INACTIVIDAD} días sin comprar."
     )
+    if t.ofertas:
+        st.markdown("**Ofertas pensadas para este cliente**")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Producto": o.producto.nombre,
+                        "Descuento": f"-{o.oferta.porcentaje} %",
+                        "Hasta": f"{o.oferta.hasta:%d/%m/%Y}",
+                        "Por qué": "; ".join(MOTIVOS_OFERTA[m] for m in o.motivos),
+                    }
+                    for o in t.ofertas
+                ]
+            ),
+            hide_index=True,
+        )
     if not t.recomendaciones:
         st.info("Por ahora no hay productos que recomendar a este cliente.")
         return

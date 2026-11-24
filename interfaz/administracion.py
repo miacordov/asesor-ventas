@@ -15,6 +15,7 @@ from ventas import administracion as admin
 from ventas import analisis
 from ventas.funcional import UMBRAL_FRECUENTE
 from ventas.modelos import ClienteFrecuente
+from ventas.ofertas import ofertas_vigentes
 from ventas.servicio import (
     acciones_por_cliente,
     clientes_con_perfil,
@@ -331,12 +332,19 @@ def lista_productos(datos) -> None:
     df = analisis.dataframe_ventas(datos)
     unidades = df.groupby("id_producto")["cantidad"].sum() if not df.empty else pd.Series(dtype=int)
     ingresos = df.groupby("id_producto")["monto"].sum() if not df.empty else pd.Series(dtype=float)
+    vigentes = ofertas_vigentes(comun.ofertas(), comun.fecha_referencia())
     buscar = st.text_input("Buscar", placeholder="Buscar por nombre", label_visibility="collapsed", key="buscar_producto")
     filas = [
         {
             "Producto": p.nombre,
             "Categoría": nombre_categoria(p.categoria),
             "Precio actual": p.precio,
+            "Oferta": (
+                f"-{vigentes[p.id_producto].porcentaje} % hasta el {vigentes[p.id_producto].hasta:%d/%m/%Y}"
+                if p.id_producto in vigentes
+                else ""
+            ),
+            "Precio con oferta": vigentes[p.id_producto].precio(p.precio) if p.id_producto in vigentes else p.precio,
             "Unidades vendidas": int(unidades.get(p.id_producto, 0)),
             "Ingresos": float(ingresos.get(p.id_producto, 0.0)),
         }
@@ -348,6 +356,8 @@ def lista_productos(datos) -> None:
         hide_index=True,
         column_config={
             "Precio actual": st.column_config.NumberColumn(format="S/ %.2f"),
+            "Oferta": st.column_config.TextColumn(help="Oferta vigente a la fecha de referencia. Se gestiona en Asesoría › Ofertas de temporada."),
+            "Precio con oferta": st.column_config.NumberColumn(format="S/ %.2f"),
             "Unidades vendidas": st.column_config.NumberColumn(format="%d"),
             "Ingresos": st.column_config.NumberColumn(format="S/ %.2f"),
         },

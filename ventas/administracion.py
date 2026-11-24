@@ -15,6 +15,7 @@ from ventas.cargador import ErrorDatos, cargar_todo
 from ventas.mensajes import validar_telefono
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
+from ventas.propuestas import Propuesta, armar_propuesta
 from ventas.repositorio import Repositorio
 
 
@@ -141,6 +142,28 @@ def poner_oferta(repo: Repositorio, id_producto: str, porcentaje: int, desde: da
 
 def quitar_oferta(repo: Repositorio, id_producto: str) -> None:
     repo.eliminar_oferta(id_producto)
+
+
+def guardar_propuesta(
+    repo: Repositorio,
+    id_cliente: str,
+    ids_productos: list[str],
+    descuento: int,
+    hoy: date,
+    vigentes: dict[str, Oferta],
+) -> Propuesta:
+    """Guarda en la agenda el combo armado a mano, con los precios (y ofertas) de hoy."""
+    datos = repo.cargar_todo()
+    _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
+    if isinstance(descuento, float) and descuento.is_integer():
+        descuento = int(descuento)
+    propuesta = armar_propuesta(id_cliente, ids_productos, descuento, hoy, datos.productos, vigentes)
+    repo.guardar_propuesta(propuesta)
+    return propuesta
+
+
+def quitar_propuesta(repo: Repositorio, id_cliente: str) -> None:
+    repo.eliminar_propuesta(id_cliente)
 
 
 def sembrar(repo: Repositorio, directorio: str | Path) -> None:

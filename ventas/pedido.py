@@ -16,8 +16,8 @@ from itertools import combinations
 
 from ventas.funcional import PerfilCliente, precio_con_descuento
 from ventas.logico import MINIMO_PRODUCTOS, MotorPedidos
-from ventas.modelos import Cliente, Producto, Recomendacion
-from ventas.ofertas import Oferta, aplicar_ofertas
+from ventas.modelos import Cliente, ClienteFrecuente, Producto, Recomendacion, Venta
+from ventas.ofertas import Oferta, aplicar_ofertas, ofertas_para_cliente
 
 MAX_CATEGORIAS = 3  # un pedido sugerido combina como máximo 3 categorías
 MAX_COMBINACIONES_MOSTRADOR = 5000  # se revisan todas para ordenar bien (ofertas y aprovechamiento)
@@ -55,6 +55,7 @@ class PedidoSugerido:
     recomendados_incluidos: tuple[str, ...]
     puntaje: float
     total_con_descuento: float
+    ofertas_incluidas: tuple[Oferta, ...] = ()  # ofertas para este cliente que trae el pedido
 
 
 # ---------------------------------------------------------------------
@@ -102,6 +103,11 @@ def categorias_para_combinar(categorias: Iterable[str]) -> tuple[str, ...]:
     return categorias * MINIMO_PRODUCTOS if len(categorias) == 1 else categorias
 
 
+def productos_comprados(ventas: Iterable[Venta], id_cliente: str) -> frozenset[str]:
+    """Los productos que el cliente ya compró alguna vez."""
+    return frozenset(v.id_producto for v in ventas if v.id_cliente == id_cliente)
+
+
 def puntaje(ids: Iterable[str], recomendaciones: Iterable[Recomendacion]) -> float:
     """Suma de la confianza de los productos recomendados que el pedido incluye."""
     ids = frozenset(ids)
@@ -119,23 +125,35 @@ def pedidos_para_cliente(
     motor: MotorPedidos,
     n: int = 3,
     margen: float = 0.10,
+    vigentes: Mapping[str, Oferta] | None = None,
+    comprados: Iterable[str] = (),
 ) -> tuple[PedidoSugerido, ...]:
-    """Mejores pedidos para un cliente: los que incluyen más productos recomendados
-    (ponderados por confianza) y, a igual puntaje, los de mayor valor. Solo se
-    consideran categorías que el presupuesto del cliente alcanza.
+    """Mejores pedidos para un cliente. Van primero los que traen más ofertas
+    pensadas para él (ver ofertas_para_cliente); luego, los que incluyen más
+    productos recomendados (ponderados por confianza) y, a igual puntaje, los de
+    mayor valor. Solo se consideran categorías que el presupuesto alcanza.
+
+    Las ofertas vigentes bajan el precio de sus productos. `comprados` son los
+    productos que el cliente ya tiene: nunca se le ofertan.
 
     Precondición: el motor ya tiene las compras cargadas (para no repetirle lo
     que ya compró). construir_agenda() lo hace.
     """
     productos = tuple(productos)
-    if perfil.n_compras == 0 or not recomendaciones:
+    vigentes = dict(vigentes or {})
+    if perfil.n_compras == 0:
         return ()
+    relevantes = ofertas_para_cliente(
+        vigentes, productos, perfil, recomendaciones, isinstance(cliente, ClienteFrecuente), comprados
+    )
+    if not recomendaciones and not relevantes:
+        return ()
+    productos = aplicar_ofertas(productos, vigentes)
     presupuesto = presupuesto_sugerido(perfil, margen)
-    categorias = categorias_alcanzables(
-        categorias_de_recomendaciones(recomendaciones, productos, maximo=len(recomendaciones)),
-        productos,
-        presupuesto,
-    )[:MAX_CATEGORIAS]
+    candidatas = tuple(o.producto.categoria for o in relevantes) + categorias_de_recomendaciones(
+        recomendaciones, productos, maximo=len(recomendaciones)
+    )
+    categorias = categorias_alcanzables(tuple(dict.fromkeys(candidatas)), productos, presupuesto)[:MAX_CATEGORIAS]
 
     # Se intenta cubrir todas las categorías; si no cabe en el presupuesto, se
     # prueban subconjuntos cada vez más chicos (conservando el orden de confianza),
@@ -155,8 +173,10 @@ def pedidos_para_cliente(
 
     por_id = {p.id_producto: p for p in productos}
     pedidos = tuple(Pedido(tuple(por_id[i] for i in ids)) for ids in combinaciones)
+    en_oferta = {o.id_producto for o in relevantes}
     mejores = sorted(
-        pedidos, key=lambda p: (-puntaje(p.ids, recomendaciones), -p.subtotal, p.ids)
+        pedidos,
+        key=lambda p: (-len(en_oferta.intersection(p.ids)), -puntaje(p.ids, recomendaciones), -p.subtotal, p.ids),
     )[: max(n, 0)]
     return tuple(
         PedidoSugerido(
@@ -168,6 +188,7 @@ def pedidos_para_cliente(
             ),
             puntaje=puntaje(pedido.ids, recomendaciones),
             total_con_descuento=pedido.total_para(cliente),
+            ofertas_incluidas=tuple(o.oferta for o in relevantes if o.id_producto in pedido.ids),
         )
         for pedido in mejores
     )
