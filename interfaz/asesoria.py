@@ -11,7 +11,7 @@ from ventas.funcional import UMBRAL_FRECUENTE, VENTANA_FRECUENCIA
 from ventas.mensajes import enumerar
 from ventas.modelos import ClienteFrecuente
 from ventas.ofertas import ofertas_vigentes
-from ventas.pedido import armar_pedido_manual
+from ventas.pedido import ORDENES_MOSTRADOR, armar_pedido_manual
 from ventas.servicio import TarjetaAgenda, construir_tarjetas
 
 TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
@@ -360,9 +360,18 @@ def pagina_pedido() -> None:
             st.info("Elige al menos una categoría para ver combinaciones.", icon=":material/touch_app:")
             return
         sugerir_otras_ofertas(datos, vigentes, elegidas)
+        orden = st.segmented_control(
+            "Ordenar por",
+            list(ORDENES_MOSTRADOR),
+            default="presupuesto",
+            format_func=ORDENES_MOSTRADOR.get,
+            key="orden_combinaciones",
+        ) or "presupuesto"
         motor, candado = comun.motor_y_candado()
         with candado:
-            pedidos = armar_pedido_manual(motor, datos.productos, presupuesto, list(elegidas), n=5, vigentes=vigentes)
+            pedidos = armar_pedido_manual(
+                motor, datos.productos, presupuesto, list(elegidas), n=5, vigentes=vigentes, orden=orden
+            )
         if not pedidos:
             st.warning(
                 "Ninguna combinación de al menos 2 productos cabe en ese presupuesto. "
@@ -371,7 +380,9 @@ def pagina_pedido() -> None:
             )
             return
         st.subheader(f"{len(pedidos)} combinaciones")
-        if any(i in vigentes for p in pedidos for i in p.ids):
+        if orden == "margen":
+            st.caption("De la que más ganancia deja a la que menos (las que tienen productos sin costo cargado, al final).")
+        elif any(i in vigentes for p in pedidos for i in p.ids):
             st.caption("Primero las que llevan productos en oferta; luego, de la que más aprovecha el presupuesto a la que menos.")
         else:
             st.caption("De la que más aprovecha el presupuesto a la que menos.")
@@ -380,6 +391,8 @@ def pagina_pedido() -> None:
             con_oferta = [i for i in pedido.ids if i in vigentes]
             with st.container(border=True, key=f"opcion_{numero}"):
                 st.markdown(f"**Opción {numero} · {dinero(pedido.subtotal)}** · sobran {dinero(presupuesto - pedido.subtotal)}")
+                if pedido.margen is not None:
+                    st.markdown(f"Margen: {dinero(pedido.margen)}")
                 if con_oferta:
                     ahorro = sum(normal[i] for i in pedido.ids) - pedido.subtotal
                     st.markdown(

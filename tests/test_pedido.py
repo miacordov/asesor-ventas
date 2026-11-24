@@ -559,3 +559,54 @@ def test_ofertas_para_cliente_y_sus_motivos():
         ("p002", ("categoria_habitual", "cliente_frecuente")),
         ("p003", ("cliente_frecuente",)),
     ]
+
+
+# =====================================================================
+# Stock y margen
+# =====================================================================
+from dataclasses import replace  # noqa: E402
+
+from ventas.pedido import disponibles  # noqa: E402
+
+
+def test_sin_stock_no_se_ofrece(datos):
+    sin_hub = tuple(replace(p, stock=0) if p.id_producto == "p009" else p for p in datos.productos)
+    assert "p009" not in {p.id_producto for p in disponibles(sin_hub)}
+    assert len(disponibles(sin_hub)) == len(datos.productos) - 1
+
+
+def test_el_mostrador_no_arma_combinaciones_con_productos_agotados(datos, motor):
+    sin_hub = tuple(replace(p, stock=0) if p.id_producto == "p009" else p for p in datos.productos)
+    pedidos = armar_pedido_manual(motor, sin_hub, 1000, ["accesorios", "audio"])
+    assert pedidos and all("p009" not in p.ids for p in pedidos)
+
+
+def test_los_pedidos_sugeridos_no_usan_productos_agotados(datos, motor):
+    cliente, perfil, recs = contexto(datos, motor, "c001")
+    sin_hub = tuple(replace(p, stock=0) if p.id_producto == "p009" else p for p in datos.productos)
+    assert all("p009" not in s.pedido.ids for s in pedidos_para_cliente(cliente, perfil, recs, sin_hub, motor))
+
+
+def test_margen_del_pedido():
+    a = Producto("q1", "A", "x", 100.0, costo=60.0)
+    b = Producto("q2", "B", "y", 50.0, costo=45.0)
+    assert Pedido((a, b)).margen == 45.0
+    assert Pedido((a, Producto("q3", "C", "z", 10.0))).margen is None  # falta un costo
+
+
+def test_el_mostrador_puede_ordenar_por_margen(motor):
+    catalogo = (
+        Producto("q1", "Barato con margen", "x", 100.0, costo=20.0),
+        Producto("q2", "Caro sin margen", "x", 190.0, costo=185.0),
+        Producto("q3", "Audio", "y", 10.0, costo=5.0),
+    )
+    por_presupuesto = armar_pedido_manual(motor, catalogo, 300, ["x", "y"])
+    por_margen = armar_pedido_manual(motor, catalogo, 300, ["x", "y"], orden="margen")
+    assert [p.ids for p in por_presupuesto] == [("q2", "q3"), ("q1", "q3")]
+    assert [p.ids for p in por_margen] == [("q1", "q3"), ("q2", "q3")]
+    assert [p.margen for p in por_margen] == [85.0, 10.0]
+
+
+def test_orden_desconocido(motor, datos):
+    with pytest.raises(ValueError, match="Orden desconocido"):
+        armar_pedido_manual(motor, datos.productos, 300, ["audio"], orden="alfabetico")

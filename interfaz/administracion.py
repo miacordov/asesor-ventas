@@ -10,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from interfaz import comun, estilo
-from interfaz.comun import dinero, dinero_corto, nombre_categoria
+from interfaz.comun import dinero, dinero_corto, nombre_categoria, texto_stock
 from ventas import administracion as admin
 from ventas import analisis
 from ventas.combos import lineas_combo, total_combo
@@ -346,6 +346,9 @@ def lista_productos(datos) -> None:
                 else ""
             ),
             "Precio con oferta": vigentes[p.id_producto].precio(p.precio) if p.id_producto in vigentes else p.precio,
+            "Costo": p.costo,
+            "Margen": p.margen,
+            "Stock": texto_stock(p),
             "Unidades vendidas": int(unidades.get(p.id_producto, 0)),
             "Ingresos": float(ingresos.get(p.id_producto, 0.0)),
         }
@@ -359,6 +362,9 @@ def lista_productos(datos) -> None:
             "Precio actual": st.column_config.NumberColumn(format="S/ %.2f"),
             "Oferta": st.column_config.TextColumn(help="Oferta vigente a la fecha de referencia. Se gestiona en Asesoría › Ofertas de temporada."),
             "Precio con oferta": st.column_config.NumberColumn(format="S/ %.2f"),
+            "Costo": st.column_config.NumberColumn(format="S/ %.2f", help="Vacío: costo no cargado."),
+            "Margen": st.column_config.NumberColumn(format="S/ %.2f", help="Precio actual menos costo, por unidad."),
+            "Stock": st.column_config.TextColumn(help="«Sin control»: el producto no tiene stock cargado y se vende sin límite."),
             "Unidades vendidas": st.column_config.NumberColumn(format="%d"),
             "Ingresos": st.column_config.NumberColumn(format="S/ %.2f"),
         },
@@ -391,12 +397,40 @@ def categoria_elegida(clave: str) -> str:
     return st.session_state.get(f"{clave}_cat_nueva", "") if elegida == NUEVA_CATEGORIA else elegida
 
 
+def campos_costo_y_stock(clave: str, producto=None) -> None:
+    izquierda, derecha = st.columns(2)
+    izquierda.number_input(
+        "Costo (S/)",
+        min_value=0.01,
+        value=None if producto is None else producto.costo,
+        step=1.0,
+        format="%.2f",
+        placeholder="Sin cargar",
+        key=f"{clave}_costo",
+        help="Lo que te cuesta. Sirve para ver el margen y no ofertar por debajo del costo.",
+    )
+    derecha.number_input(
+        "Stock (unidades)",
+        min_value=0,
+        value=None if producto is None else producto.stock,
+        step=1,
+        placeholder="Sin control",
+        key=f"{clave}_stock",
+        help="Vacío: no se controla. Con stock cargado, cada venta lo descuenta y no se vende lo que no hay.",
+    )
+
+
 def _crear_producto() -> None:
     v = comun.version("producto")
     clave = f"np_{v}"
     try:
         producto = admin.crear_producto(
-            _repo(), st.session_state[f"{clave}_nombre"], categoria_elegida(clave), st.session_state[f"{clave}_precio"]
+            _repo(),
+            st.session_state[f"{clave}_nombre"],
+            categoria_elegida(clave),
+            st.session_state[f"{clave}_precio"],
+            costo=st.session_state.get(f"{clave}_costo"),
+            stock=st.session_state.get(f"{clave}_stock"),
         )
     except ValueError as error:
         comun.avisar("error", str(error))
@@ -411,6 +445,7 @@ def nuevo_producto(datos) -> None:
         st.text_input("Nombre del producto", key=f"{clave}_nombre", placeholder="Ej.: Impresora láser")
         selector_categoria(datos, clave)
         st.number_input("Precio (S/)", min_value=0.01, value=50.0, step=1.0, format="%.2f", key=f"{clave}_precio")
+        campos_costo_y_stock(clave)
         st.button("Registrar producto", type="primary", icon=":material/add_box:", on_click=_crear_producto)
 
 
@@ -418,7 +453,13 @@ def _guardar_producto(id_producto: str) -> None:
     clave = f"ep_{id_producto}_{comun.version('producto_ed')}"
     try:
         producto = admin.editar_producto(
-            _repo(), id_producto, st.session_state[f"{clave}_nombre"], categoria_elegida(clave), st.session_state[f"{clave}_precio"]
+            _repo(),
+            id_producto,
+            st.session_state[f"{clave}_nombre"],
+            categoria_elegida(clave),
+            st.session_state[f"{clave}_precio"],
+            costo=st.session_state.get(f"{clave}_costo"),
+            stock=st.session_state.get(f"{clave}_stock"),
         )
     except ValueError as error:
         comun.avisar("error", str(error))
@@ -450,6 +491,7 @@ def editar_producto(datos) -> None:
         st.text_input("Nombre del producto", value=producto.nombre, key=f"{clave}_nombre")
         selector_categoria(datos, clave, actual=producto.categoria)
         st.number_input("Precio (S/)", min_value=0.01, value=float(producto.precio), step=1.0, format="%.2f", key=f"{clave}_precio")
+        campos_costo_y_stock(clave, producto)
         st.caption("Cambiar el precio no altera las ventas ya registradas: cada venta conserva el precio con que se hizo.")
         st.button(
             "Guardar cambios", type="primary", icon=":material/save:", on_click=_guardar_producto, args=(elegido,), key=f"guardar_producto_{elegido}"
@@ -611,6 +653,15 @@ def _registrar_venta(hoy) -> None:
     comun.reiniciar("venta")
 
 
+def etiqueta_venta(producto) -> str:
+    etiqueta = f"{producto.nombre} · {dinero(producto.precio)}"
+    if producto.stock is None:
+        return etiqueta
+    if producto.stock == 0:
+        return f"{etiqueta} · agotado"
+    return f"{etiqueta} · {'queda 1' if producto.stock == 1 else f'quedan {producto.stock}'}"
+
+
 def formulario_venta(datos, hoy) -> None:
     if not datos.clientes or not datos.productos:
         st.info("Para registrar una venta primero necesitas al menos un cliente y un producto.", icon=":material/info:")
@@ -626,7 +677,7 @@ def formulario_venta(datos, hoy) -> None:
         id_producto = derecha.selectbox(
             "Producto",
             list(productos),
-            format_func=lambda i: f"{productos[i].nombre} · {dinero(productos[i].precio)}",
+            format_func=lambda i: etiqueta_venta(productos[i]),
             key=f"venta_producto_{v}",
         )
         c1, c2, c3 = st.columns(3)

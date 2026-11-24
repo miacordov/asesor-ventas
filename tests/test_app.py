@@ -14,6 +14,7 @@ from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+import pandas as pd
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -912,3 +913,96 @@ def test_el_por_que_explica_el_ritmo_propio_del_cliente():
         "Frecuente: 3 compras o más en los últimos 180 días (lleva 3). "
         "Compra cada 18.5 días en promedio: se considera inactivo pasados 28 días sin comprar."
     ) in captions
+
+
+# ---------------------------------------------------------------------
+# Costo y stock
+# ---------------------------------------------------------------------
+def test_registrar_un_producto_con_costo_y_stock():
+    at = abrir("productos")
+    at.text_input(key="np_0_nombre").set_value("Cable HDMI").run()
+    at.selectbox(key="np_0_cat").select("accesorios").run()
+    at.number_input(key="np_0_precio").set_value(25.0).run()
+    at.number_input(key="np_0_costo").set_value(15.0).run()
+    at.number_input(key="np_0_stock").set_value(8).run()
+    boton(at, "Registrar producto").click().run()
+    assert ok(at)
+    nuevo = tabla(at)[tabla(at)["Producto"] == "Cable HDMI"].iloc[0]
+    assert (nuevo["Costo"], nuevo["Margen"], nuevo["Stock"]) == (15.0, 10.0, "8")
+
+
+def test_sin_costo_ni_stock_el_catalogo_lo_indica():
+    laptop = tabla(abrir("productos")).iloc[0]
+    assert pd.isna(laptop["Costo"]) and pd.isna(laptop["Margen"]) and laptop["Stock"] == "Sin control"
+
+
+def test_un_producto_agotado_se_marca_y_no_se_puede_vender():
+    at = abrir("productos")
+    at.selectbox(key="editar_producto_sel").select("p002").run()
+    at.number_input(key="ep_p002_0_stock").set_value(1).run()
+    boton(at, "Guardar cambios").click().run()
+    assert ok(at)
+    at.switch_page("paginas/registro_ventas.py").run()
+    at.selectbox(key="venta_producto_0").select("p002").run()
+    at.number_input(key="venta_cantidad_0").set_value(2).run()
+    boton(at, "Registrar venta").click().run()
+    assert "No hay stock suficiente de Mouse inalámbrico: queda 1." in errores(at)
+    at.number_input(key="venta_cantidad_0").set_value(1).run()
+    boton(at, "Registrar venta").click().run()
+    assert ok(at)
+    at.switch_page("paginas/productos.py").run()
+    assert tabla(at)[tabla(at)["Producto"] == "Mouse inalámbrico"].iloc[0]["Stock"] == "Agotado"
+
+
+def test_el_formulario_de_venta_muestra_el_stock():
+    at = abrir("productos")
+    at.selectbox(key="editar_producto_sel").select("p002").run()
+    at.number_input(key="ep_p002_0_stock").set_value(3).run()
+    boton(at, "Guardar cambios").click().run()
+    at.switch_page("paginas/registro_ventas.py").run()
+    opciones = at.selectbox(key="venta_producto_0").options
+    assert "Mouse inalámbrico · S/ 45.00 · quedan 3" in opciones
+    assert "Laptop 14 pulgadas · S/ 2,400.00" in opciones
+
+
+def cargar_costo_stock(id_producto, costo=None, stock=None):
+    from interfaz import comun
+    from ventas import administracion as admin
+
+    p = next(p for p in comun.repositorio().cargar_todo().productos if p.id_producto == id_producto)
+    admin.editar_producto(comun.repositorio(), id_producto, p.nombre, p.categoria, p.precio, costo=costo, stock=stock)
+
+
+def test_ofertas_muestran_stock_y_margen():
+    abrir("ofertas")
+    cargar_costo_stock("p002", costo=30.0, stock=12)
+    t = tabla(abrir("ofertas"))
+    mouse = t[t["Producto"] == "Mouse inalámbrico"].iloc[0]
+    assert (mouse["Stock"], mouse["Margen"]) == ("12", 15.0)
+    assert t[t["Producto"] == "Laptop 14 pulgadas"].iloc[0]["Stock"] == "Sin control"
+
+
+def test_avisa_si_la_oferta_queda_por_debajo_del_costo():
+    abrir("ofertas")
+    cargar_costo_stock("p002", costo=40.0)
+    at = abrir("ofertas")
+    at.selectbox(key="of_0_producto").set_value("p002").run()
+    at.number_input(key="of_0_porcentaje").set_value(20).run()  # 45 -> 36
+    assert "Con 20 % vendes a S/ 36.00, por debajo del costo (S/ 40.00): pierdes S/ 4.00 por unidad." in [
+        w.value for w in at.warning
+    ]
+    at.number_input(key="of_0_porcentaje").set_value(10).run()  # 40,50: todavía gana
+    assert not at.warning
+
+
+def test_el_mostrador_ordena_por_margen():
+    abrir("pedido")
+    cargar_costo_stock("p007", costo=80.0)  # mochila: deja 5
+    cargar_costo_stock("p009", costo=20.0)  # hub: deja 40
+    cargar_costo_stock("p005", costo=50.0)  # auriculares: dejan 45
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value(["accesorios", "audio"]).run()
+    at.segmented_control(key="orden_combinaciones").set_value("margen").run()
+    assert ok(at)
+    textos = " ".join(m.value for m in at.markdown)
+    assert textos.index("Margen: S/ 85.00") < textos.index("Margen: S/ 50.00")

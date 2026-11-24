@@ -21,6 +21,7 @@ PORCENTAJE_MINIMO = 1
 PORCENTAJE_MAXIMO = 90
 INDICE_PICO = 1.3  # se vende 30 % más que el resto del año
 INDICE_BAJO = 0.7  # se vende 30 % menos que el resto del año
+MESES_STOCK_ALTO = 3  # stock que alcanza para estos meses o más: conviene moverlo
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,17 @@ class DesempenoTemporada:
     promedio_temporada: float  # unidades por mes de temporada
     promedio_resto: float  # unidades por mes fuera de temporada
     indice: float  # promedio_temporada / promedio_resto (inf si solo vende en temporada)
+    promedio_mensual: float = 0.0  # unidades por mes en todo el historial
+
+    @property
+    def meses_de_stock(self) -> float | None:
+        """Para cuántos meses alcanza el stock al ritmo de venta (None sin stock cargado)."""
+        stock = self.producto.stock
+        if stock is None:
+            return None
+        if not self.promedio_mensual:
+            return math.inf if stock else 0.0
+        return round(stock / self.promedio_mensual, 2)
 
     @property
     def sugerencia(self) -> str:
@@ -114,7 +126,9 @@ class DesempenoTemporada:
         if self.indice >= INDICE_PICO:
             return "pico"
         if self.indice <= INDICE_BAJO:
-            return "baja_rotacion"
+            # Una oferta para «mover stock» solo tiene sentido si sobra stock.
+            meses = self.meses_de_stock
+            return "baja_rotacion" if meses is None or meses >= MESES_STOCK_ALTO else "estable"
         return "estable"
 
 
@@ -176,9 +190,17 @@ def desempeno_en_temporada(
                 promedio_temporada=round(promedio_temporada, 2),
                 promedio_resto=round(promedio_resto, 2),
                 indice=indice if math.isinf(indice) else round(indice, 2),
+                promedio_mensual=sum(v.cantidad for v in propias) / len(meses) if meses else 0.0,
             )
         )
     return tuple(sorted(resultado, key=lambda d: (-d.indice, -d.unidades_temporada, d.producto.id_producto)))
+
+
+def vende_a_perdida(producto: Producto, porcentaje: int) -> bool:
+    """¿Con ese descuento el precio queda por debajo del costo? (sin costo: no se sabe)."""
+    if producto.costo is None:
+        return False
+    return round(producto.precio * (100 - porcentaje) / 100, 2) < producto.costo
 
 
 def ofertas_vigentes(ofertas: Iterable[Oferta], fecha: date) -> dict[str, Oferta]:

@@ -30,7 +30,7 @@ from ventas.mensajes import (
 )
 from ventas.modelos import Cliente, ClienteFrecuente, Producto, Recomendacion
 from ventas.ofertas import Oferta, OfertaParaCliente, ofertas_para_cliente
-from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
+from ventas.pedido import PedidoSugerido, disponibles, pedidos_para_cliente, productos_comprados
 from ventas.propuestas import Propuesta
 
 
@@ -110,7 +110,7 @@ def construir_tarjetas(
             comprados,
         )
         limite = motor.limite_inactividad(cliente.id_cliente)
-        motor.cargar_catalogo(datos.productos)
+        motor.cargar_catalogo(disponibles(datos.productos))
         complementos = tuple(producto_de[i] for i in motor.complementos(cliente.id_cliente))
         tarjetas.append(
             TarjetaAgenda(

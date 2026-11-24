@@ -156,3 +156,37 @@ def test_fechas_de_la_proxima_temporada():
 )
 def test_temporada_proxima(hoy, clave):
     assert temporada_proxima(hoy).clave == clave
+
+
+# ---------------------------------------------------------------------
+# «Mover stock» solo con stock de sobra
+# ---------------------------------------------------------------------
+def sugerencia_del_usb(stock):
+    from dataclasses import replace
+
+    (usb,) = desempeno_en_temporada([replace(USB, stock=stock)], VENTAS, NAVIDAD)
+    return usb
+
+
+def test_baja_rotacion_con_stock_para_mas_de_tres_meses():
+    usb = sugerencia_del_usb(3)  # vende 11 en 12 meses: 3 unidades alcanzan para 3,3 meses
+    assert (usb.meses_de_stock, usb.sugerencia) == (3.27, "baja_rotacion")
+
+
+def test_baja_rotacion_con_poco_stock_no_sugiere_oferta():
+    usb = sugerencia_del_usb(2)  # 2,2 meses: no hay nada que mover
+    assert (usb.meses_de_stock, usb.sugerencia) == (2.18, "estable")
+
+
+def test_sin_stock_cargado_se_sugiere_como_antes():
+    usb = sugerencia_del_usb(None)
+    assert (usb.meses_de_stock, usb.sugerencia) == (None, "baja_rotacion")
+
+
+def test_oferta_por_debajo_del_costo():
+    from ventas.ofertas import vende_a_perdida
+
+    mouse = Producto("p003", "Mouse", "perifericos", 50.0, costo=40.0)
+    assert not vende_a_perdida(mouse, 20)  # 40 = costo: no pierde
+    assert vende_a_perdida(mouse, 21)  # 39,50 < 40
+    assert not vende_a_perdida(MOUSE, 90)  # sin costo no se sabe

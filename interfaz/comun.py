@@ -40,6 +40,13 @@ NOMBRES_CATEGORIA = {
 }
 
 
+def texto_stock(producto) -> str:
+    """«Sin control», «Agotado» o las unidades que quedan."""
+    if producto.stock is None:
+        return "Sin control"
+    return "Agotado" if producto.stock == 0 else str(producto.stock)
+
+
 def nombre_categoria(categoria: str) -> str:
     return NOMBRES_CATEGORIA.get(categoria, categoria.replace("_", " ").capitalize())
 
