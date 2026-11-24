@@ -20,6 +20,7 @@ from ventas.funcional import PerfilCliente, clasificar_cliente
 from ventas.modelos import Cliente, Producto, Recomendacion, _validar_id, _validar_texto
 from ventas.ofertas import Oferta
 from ventas.pedido import PedidoSugerido, pedidos_para_cliente, productos_comprados
+from ventas.propuestas import Propuesta
 
 # Formato internacional de WhatsApp: solo dígitos, sin "+", sin cero inicial, hasta 15.
 _PATRON_TELEFONO = re.compile(r"^[1-9]\d{7,14}$")
@@ -145,6 +146,20 @@ def redactar_mensaje(
     saludo, cierre = _PLANTILLAS[tipo_accion]
     partes = [saludo(primer_nombre(cliente.nombre), perfil), frase_oferta(cliente, pedido, recomendados), cierre]
     return " ".join(parte for parte in partes if parte)
+
+
+def mensaje_propuesta(cliente: Cliente, propuesta: Propuesta, nombres: Mapping[str, str]) -> str:
+    """Texto para WhatsApp con el combo, las ofertas y el descuento acordado."""
+    items = [f"{nombres[linea.id_producto]}{' (en oferta)' if linea.en_oferta else ''}" for linea in propuesta.lineas]
+    precio = (
+        f"por {dinero(propuesta.subtotal)}, y con tu {propuesta.descuento} % de descuento te queda en {dinero(propuesta.total)}"
+        if propuesta.descuento
+        else f"por {dinero(propuesta.total)}"
+    )
+    return (
+        f"Hola {primer_nombre(cliente.nombre)}, te preparamos una propuesta especial: "
+        f"{enumerar(items)} {precio}. ¡Escríbenos si te interesa!"
+    )
 
 
 # ---------------------------------------------------------------------

@@ -12,11 +12,13 @@ from ventas.administracion import (
     editar_producto,
     eliminar_cliente,
     eliminar_producto,
+    guardar_propuesta,
     limpiar_nombre,
     normalizar_categoria,
     normalizar_telefono,
     poner_oferta,
     quitar_oferta,
+    quitar_propuesta,
     registrar_venta,
     sembrar,
 )
@@ -368,3 +370,26 @@ def test_quitar_oferta(repo):
     poner_oferta(repo, "p002", 15, date(2026, 11, 1), date(2026, 12, 31))
     quitar_oferta(repo, "p002")
     assert repo.cargar_ofertas() == ()
+
+
+# =====================================================================
+# Propuestas armadas a mano
+# =====================================================================
+def test_guardar_una_propuesta_en_la_agenda(repo):
+    from ventas.ofertas import Oferta
+
+    vigentes = {"p005": Oferta("p005", 20, date(2026, 10, 1), date(2026, 10, 31))}
+    propuesta = guardar_propuesta(repo, "c001", ["p005", "p009"], 10.0, HOY, vigentes)
+    assert propuesta.descuento == 10 and propuesta.subtotal == 136.0 and propuesta.total == 122.4
+    assert repo.cargar_propuestas() == (propuesta,)
+
+
+def test_propuesta_para_un_cliente_inexistente(repo):
+    with pytest.raises(ErrorDatos, match="No existe el cliente c999"):
+        guardar_propuesta(repo, "c999", ["p005", "p009"], 0, HOY, {})
+
+
+def test_quitar_propuesta(repo):
+    guardar_propuesta(repo, "c001", ["p005", "p009"], 0, HOY, {})
+    quitar_propuesta(repo, "c001")
+    assert repo.cargar_propuestas() == ()

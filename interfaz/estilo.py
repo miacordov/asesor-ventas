@@ -161,6 +161,13 @@ def _svg(cuerpo: str) -> str:
 
 
 ILUSTRACIONES = {
+    "propuesta": _svg(
+        '<rect x="88" y="26" width="104" height="112" rx="10" fill="#14305E"/>'
+        '<path d="M108 54h64M108 74h64M108 94h40"/>'
+        '<path d="M196 112l34-34 12 12-34 34h-12z" fill="#0B1D3A"/><path d="M222 86l12 12"/>'
+        '<circle cx="54" cy="80" r="20" fill="#0B1D3A"/>'
+        '<text x="54" y="88" text-anchor="middle" font-family="Playfair Display,Georgia,serif" font-size="22" font-weight="700" fill="#D9B45A" stroke="none">%</text>'
+    ),
     "ofertas": _svg(
         '<path d="M84 40h74l52 52-58 58-52-52V40z" fill="#14305E"/><circle cx="108" cy="64" r="8" fill="#0B1D3A"/>'
         '<text x="154" y="112" text-anchor="middle" font-family="Playfair Display,Georgia,serif" font-size="30" font-weight="700" fill="#D9B45A" stroke="none">%</text>'

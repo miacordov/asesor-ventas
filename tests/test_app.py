@@ -21,7 +21,7 @@ from streamlit.testing.v1 import AppTest
 RAIZ = Path(__file__).resolve().parent.parent
 APP = str(RAIZ / "app.py")
 TIEMPO = 60
-PAGINAS = ["agenda", "pedido", "ofertas", "resumen", "clientes", "productos", "registro_ventas"]
+PAGINAS = ["agenda", "pedido", "ofertas", "propuesta", "resumen", "clientes", "productos", "registro_ventas"]
 
 
 @pytest.fixture(autouse=True)
@@ -376,6 +376,67 @@ def test_quitar_una_oferta():
 
 
 # =====================================================================
+# Asesoría: propuesta personalizada
+# =====================================================================
+def armar_propuesta_para(at: AppTest, id_cliente: str, productos: list[str], descuento: int) -> AppTest:
+    at.selectbox(key="propuesta_cliente").set_value(id_cliente).run()
+    at.multiselect(key=f"pp_{id_cliente}_0_productos").set_value(productos).run()
+    at.number_input(key=f"pp_{id_cliente}_0_descuento").set_value(descuento).run()
+    return at
+
+
+def test_personalizar_desde_la_agenda_abre_la_propuesta_del_cliente():
+    at = abrir()
+    at.button(key="personalizar_c001").click().run()
+    assert ok(at) and banner(at) == "Propuesta personalizada"
+    assert at.selectbox(key="propuesta_cliente").value == "c001"
+
+
+def test_la_propuesta_sugiere_el_descuento_del_cliente_frecuente():
+    at = abrir("propuesta")
+    at.selectbox(key="propuesta_cliente").set_value("c001").run()  # Juan es frecuente
+    assert at.number_input(key="pp_c001_0_descuento").value == 10
+
+
+def test_guardar_una_propuesta_la_lleva_a_la_agenda():
+    abrir("propuesta")
+    ofertar("p005", 20)  # auriculares: 95 -> 76
+    at = armar_propuesta_para(abrir("propuesta"), "c001", ["p005", "p009"], 5)
+    boton(at, "Guardar en la agenda").click().run()
+    assert ok(at) and "Propuesta para Juan Pérez guardada en la agenda." in exito(at)
+    esperado = (
+        "Hola Juan, te preparamos una propuesta especial: Auriculares con micrófono (en oferta) y Hub USB-C "
+        "por S/ 136.00, y con tu 5 % de descuento te queda en S/ 129.20. ¡Escríbenos si te interesa!"
+    )
+    enlaces = [parse_qs(urlparse(b.proto.url).query)["text"][0] for b in at.get("link_button")]
+    assert esperado in enlaces  # en la lista de propuestas guardadas
+
+    at.switch_page("paginas/agenda.py").run()
+    html = " ".join(m.value for m in at.markdown)
+    assert "Propuesta lista para enviar" in html and "Propuesta guardada el 05/10/2026" in html
+    assert ("", "S/ 136.00") not in totales(at) and ("S/ 136.00", "S/ 129.20") in totales(at)
+    enlaces = [parse_qs(urlparse(b.proto.url).query)["text"][0] for b in at.get("link_button")]
+    assert esperado in enlaces
+
+
+def test_un_solo_producto_no_se_puede_guardar():
+    at = abrir("propuesta")
+    at.selectbox(key="propuesta_cliente").set_value("c001").run()
+    at.multiselect(key="pp_c001_0_productos").set_value(["p005"]).run()
+    assert ok(at)
+    assert not [b for b in at.button if b.label == "Guardar en la agenda"]
+    assert any("al menos 2 productos" in c.value for c in at.caption)
+
+
+def test_quitar_una_propuesta_guardada():
+    at = armar_propuesta_para(abrir("propuesta"), "c001", ["p005", "p009"], 0)
+    boton(at, "Guardar en la agenda").click().run()
+    boton(at, "Quitar").click().run()
+    assert ok(at) and "Propuesta de Juan Pérez quitada de la agenda." in exito(at)
+    assert any("Todavía no guardaste propuestas" in i.value for i in at.info)
+
+
+# =====================================================================
 # Administración: resumen
 # =====================================================================
 def test_resumen_indicadores_calculados_a_mano():
@@ -671,6 +732,7 @@ def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
         ("agenda", "Asesoría", "Agenda de fidelización"),
         ("pedido", "Asesoría · modo mostrador", "Arma mi pedido"),
         ("ofertas", "Asesoría", "Ofertas de temporada"),
+        ("propuesta", "Asesoría", "Propuesta personalizada"),
         ("resumen", "Administración", "Resumen del negocio"),
         ("clientes", "Administración", "Clientes"),
         ("productos", "Administración", "Productos"),

@@ -8,6 +8,7 @@ from ventas.cargador import cargar_todo
 from ventas.logico import PuenteProlog
 from ventas.modelos import ClienteFrecuente, ClienteRegular
 from ventas.ofertas import Oferta
+from ventas.propuestas import LineaPropuesta, Propuesta
 from ventas.servicio import clientes_con_perfil, construir_tarjetas, resumen_ventas
 
 DATOS = Path(__file__).resolve().parent / "datos"
@@ -250,3 +251,18 @@ def test_el_pedido_y_el_mensaje_priorizan_la_oferta(datos, motor):
 
 def test_sin_ofertas_la_agenda_no_cambia(datos, motor, tarjetas):
     assert construir_tarjetas(datos, HOY, motor, vigentes={}) == tarjetas
+
+
+def test_la_propuesta_guardada_reemplaza_el_mensaje_automatico(datos, motor, tarjetas):
+    guardada = Propuesta(
+        "c001", (LineaPropuesta("p005", 95.0, 76.0), LineaPropuesta("p009", 60.0, 60.0)), 5, HOY
+    )
+    nuevas = construir_tarjetas(datos, HOY, motor, propuestas=[guardada])
+    juan = next(t for t in nuevas if t.cliente.id_cliente == "c001")
+    assert juan.propuesta == guardada
+    assert juan.mensaje.texto == (
+        "Hola Juan, te preparamos una propuesta especial: Auriculares con micrófono (en oferta) y Hub USB-C "
+        "por S/ 136.00, y con tu 5 % de descuento te queda en S/ 129.20. ¡Escríbenos si te interesa!"
+    )
+    # Los demás clientes no cambian.
+    assert [t for t in nuevas if t.cliente.id_cliente != "c001"] == [t for t in tarjetas if t.cliente.id_cliente != "c001"]

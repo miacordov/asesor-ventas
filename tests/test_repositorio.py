@@ -7,6 +7,7 @@ import pytest
 from ventas.cargador import Datos, ErrorDatos, cargar_todo
 from ventas.modelos import ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
+from ventas.propuestas import LineaPropuesta, Propuesta
 from ventas.repositorio import Repositorio, RepositorioSQLite
 
 DATOS = Path(__file__).resolve().parent / "datos"
@@ -382,3 +383,52 @@ def test_una_base_existente_recibe_la_tabla_de_ofertas(tmp_path, datos):
     reabierto = RepositorioSQLite(ruta)
     assert reabierto.cargar_todo() == datos and reabierto.cargar_ofertas() == ()
     reabierto.cerrar()
+
+
+# =====================================================================
+# Propuestas guardadas en la agenda
+# =====================================================================
+def propuesta(id_cliente="c001", ids=("p002", "p009"), descuento=10):
+    lineas = tuple(LineaPropuesta(i, 50.0, 40.0) for i in ids)
+    return Propuesta(id_cliente, lineas, descuento, date(2026, 10, 5))
+
+
+def test_guardar_y_leer_una_propuesta(repo_con_datos):
+    repo_con_datos.guardar_propuesta(propuesta())
+    assert repo_con_datos.cargar_propuestas() == (propuesta(),)
+
+
+def test_guardar_otra_vez_reemplaza_la_propuesta_del_cliente(repo_con_datos):
+    repo_con_datos.guardar_propuesta(propuesta())
+    nueva = propuesta(ids=("p003", "p005", "p007"), descuento=0)
+    repo_con_datos.guardar_propuesta(nueva)
+    assert repo_con_datos.cargar_propuestas() == (nueva,)
+
+
+def test_eliminar_una_propuesta(repo_con_datos):
+    repo_con_datos.guardar_propuesta(propuesta())
+    repo_con_datos.eliminar_propuesta("c001")
+    assert repo_con_datos.cargar_propuestas() == ()
+    with pytest.raises(ErrorDatos, match="no tiene una propuesta"):
+        repo_con_datos.eliminar_propuesta("c001")
+
+
+def test_propuesta_de_cliente_o_producto_inexistente(repo_con_datos):
+    with pytest.raises(ErrorDatos, match="no existe"):
+        repo_con_datos.guardar_propuesta(propuesta(id_cliente="c999"))
+    with pytest.raises(ErrorDatos, match="no existe"):
+        repo_con_datos.guardar_propuesta(propuesta(ids=("p002", "p999")))
+    assert repo_con_datos.cargar_propuestas() == ()  # todo o nada
+
+
+def test_borrar_un_producto_deja_fuera_la_propuesta_que_ya_no_es_combo(repo_con_datos):
+    repo_con_datos.agregar_producto(Producto("p100", "Nuevo", "audio", 50.0))
+    repo_con_datos.guardar_propuesta(propuesta(ids=("p002", "p100")))
+    repo_con_datos.eliminar_producto("p100")
+    assert repo_con_datos.cargar_propuestas() == ()
+
+
+def test_restablecer_los_datos_borra_las_propuestas(repo_con_datos, datos):
+    repo_con_datos.guardar_propuesta(propuesta())
+    repo_con_datos.reemplazar_todo(datos)
+    assert repo_con_datos.cargar_propuestas() == ()

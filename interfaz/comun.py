@@ -12,6 +12,7 @@ from ventas.cargador import Datos
 from ventas.logico import PuenteProlog
 from ventas.mensajes import dinero
 from ventas.ofertas import Oferta
+from ventas.propuestas import Propuesta
 from ventas.repositorio import RepositorioSQLite
 
 RAIZ = Path(__file__).resolve().parent.parent
@@ -62,6 +63,11 @@ def motor_y_candado() -> tuple[PuenteProlog, threading.Lock]:
 def datos() -> Datos:
     """Lo último que hay en la base (se lee en cada ejecución: es pequeño y siempre está al día)."""
     return repositorio().cargar_todo()
+
+
+def propuestas() -> tuple[Propuesta, ...]:
+    """Las propuestas armadas a mano y guardadas en la agenda."""
+    return repositorio().cargar_propuestas()
 
 
 def ofertas() -> tuple[Oferta, ...]:

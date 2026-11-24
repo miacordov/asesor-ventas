@@ -37,7 +37,7 @@ def pagina_agenda() -> None:
     vigentes = ofertas_vigentes(comun.ofertas(), hoy)
     motor, candado = comun.motor_y_candado()
     with candado:
-        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes)
+        tarjetas = construir_tarjetas(datos, hoy, motor, vigentes=vigentes, propuestas=comun.propuestas())
     if not tarjetas:
         st.info(
             "Todavía no hay clientes para contactar. Registra ventas en Administración › Ventas "
@@ -92,12 +92,16 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             estilo.chip(accion.titulo(), TONO_PRIORIDAD[accion.prioridad])
             + estilo.chip(f"Prioridad {accion.prioridad}")
             + estilo.chip("Cliente frecuente" if frecuente else "Cliente regular")
-            + (estilo.chip("Oferta para este cliente", "ok") if t.ofertas else ""),
+            + (estilo.chip("Oferta para este cliente", "ok") if t.ofertas else "")
+            + (estilo.chip("Propuesta lista para enviar", "media") if t.propuesta else ""),
             unsafe_allow_html=True,
         )
         st.write(t.entrada.motivo)
-        mostrar_pedido_resumido(t)
-        boton_whatsapp, por_que, mensaje = st.columns([1.35, 1, 1])
+        if t.propuesta:
+            mostrar_propuesta_guardada(t)
+        else:
+            mostrar_pedido_resumido(t)
+        boton_whatsapp, por_que, mensaje, personalizar = st.columns([1.35, 1, 1, 1.25])
         if t.mensaje.enlace:
             boton_whatsapp.link_button(
                 "WhatsApp", t.mensaje.enlace, type="primary", icon=":material/chat:", width="stretch"
@@ -110,6 +114,14 @@ def tarjeta(posicion: int, t: TarjetaAgenda) -> None:
             st.write(t.mensaje.texto)
             if not t.mensaje.enlace:
                 st.caption("Este cliente no tiene teléfono registrado; agrégalo en Administración › Clientes.")
+        if personalizar.button(
+            "Editar propuesta" if t.propuesta else "Personalizar",
+            key=f"personalizar_{t.cliente.id_cliente}",
+            icon=":material/edit_note:",
+            width="stretch",
+        ):
+            st.session_state["propuesta_cliente"] = t.cliente.id_cliente
+            st.switch_page("paginas/propuesta.py")
 
 
 def filas_html(productos) -> str:
@@ -129,6 +141,29 @@ def filas_sugerido_html(sugerido) -> str:
             else nombre_categoria(p.categoria),
         )
         for p in sugerido.pedido.productos
+    )
+
+
+def mostrar_propuesta_guardada(t: TarjetaAgenda) -> None:
+    """El combo armado a mano reemplaza al pedido sugerido en la tarjeta."""
+    p = t.propuesta
+    por_id = {x.id_producto: x for x in comun.datos().productos}
+    filas = "".join(
+        estilo.fila_producto(
+            por_id[linea.id_producto].nombre,
+            por_id[linea.id_producto].categoria,
+            dinero(linea.precio),
+            f"Oferta · antes {dinero(linea.precio_normal)}" if linea.en_oferta else nombre_categoria(por_id[linea.id_producto].categoria),
+        )
+        for linea in p.lineas
+    )
+    if p.descuento:
+        cierre = estilo.total("Total", dinero(p.total), tachado=dinero(p.subtotal), nota=f"{p.descuento} % de descuento al combo")
+    else:
+        cierre = estilo.total("Total", dinero(p.total))
+    st.markdown(
+        f'<div class="pedido-titulo">Propuesta guardada el {p.fecha:%d/%m/%Y}</div>' + filas + cierre,
+        unsafe_allow_html=True,
     )
 
 
