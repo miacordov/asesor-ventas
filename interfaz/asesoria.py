@@ -7,7 +7,7 @@ from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
 from ventas import administracion as admin
 from ventas.combos import ESTADOS
-from ventas.contactos import RESULTADOS, conversion, pospuestos, ultimo_contacto
+from ventas.contactos import RESULTADOS, pospuestos, ultimo_contacto
 from ventas.funcional import UMBRAL_FRECUENTE, VENTANA_FRECUENCIA
 from ventas.mensajes import enumerar
 from ventas.modelos import ClienteFrecuente
@@ -61,13 +61,11 @@ def pagina_agenda() -> None:
         )
     if not st.session_state.get("ver_pospuestos"):
         tarjetas = tuple(t for t in tarjetas if t.cliente.id_cliente not in en_espera)
-    resumen_superior(tarjetas, conversion(contactos, datos.ventas, hoy))
+    resumen_superior(tarjetas)
     st.caption(
         "**Reactivar:** compraban seguido y llevan más tiempo del habitual sin comprar. "
         "**Fidelizar:** compran seguido y siguen activos. "
-        "**Complementar:** compran poco; se les ofrece lo que llevan clientes parecidos.  \n"
-        "**Conversión:** de los clientes a los que les escribiste y marcaste con «Registrar contacto», "
-        "qué parte compró en los 15 días siguientes (si escribes a 10 y compran 3, es 30 %)."
+        "**Complementar:** compran poco; se les ofrece lo que llevan clientes parecidos."
     )
     filtro = st.segmented_control(
         "Mostrar", list(FILTROS), default="Todos", key="filtro_agenda", label_visibility="collapsed"
@@ -82,26 +80,16 @@ def pagina_agenda() -> None:
                     tarjeta(posicion, tarjeta_)
 
 
-def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...], conv) -> None:
+def resumen_superior(tarjetas: tuple[TarjetaAgenda, ...]) -> None:
     def cuantos(tipo: str) -> int:
         return sum(t.entrada.accion.tipo == tipo for t in tarjetas)
 
     with st.container(key="fila_indicadores"):
-        c = st.columns([1, 1, 1, 1, 1.5])
+        c = st.columns(4)
     c[0].metric("A contactar", len(tarjetas), border=True)
     c[1].metric("Por reactivar", cuantos("reactivar"), border=True)
     c[2].metric("Por fidelizar", cuantos("fidelizar"), border=True)
     c[3].metric("Complementar", cuantos("cruzar"), border=True)
-    c[4].metric(
-        "Conversión (15 días)",
-        "Sin datos aún" if conv.tasa is None else f"{conv.tasa:.0%}".replace("%", " %") + f" · {conv.compraron} de {conv.contactos}",
-        border=True,
-        help=(
-            "Se calcula con los contactos que registras en cada tarjeta («Registrar contacto»)."
-            if conv.tasa is None
-            else f"De {conv.contactos} contactos registrados, {conv.compraron} terminaron en una compra en los 15 días siguientes."
-        ),
-    )
 
 
 def tarjeta(posicion: int, t: TarjetaAgenda) -> None:

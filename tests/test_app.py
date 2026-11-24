@@ -184,7 +184,6 @@ def test_agenda_indicadores_calculados_a_mano():
         "Por reactivar": "3",
         "Por fidelizar": "2",
         "Complementar": "1",
-        "Conversión (15 días)": "Sin datos aún",  # todavía no se registró ningún contacto
     }
 
 
@@ -209,11 +208,6 @@ def test_con_cero_dias_el_cliente_sigue_en_la_agenda_con_su_ultimo_contacto():
     at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
     assert "1. Juan Pérez" in tarjetas(at)
     assert any("Último contacto: 05/10/2026 · Interesado" in c.value for c in at.caption)
-
-
-def test_la_conversion_cuenta_los_contactos_registrados():
-    at = registrar_contacto(abrir(), "c001", "interesado", dias=0)
-    assert indicadores(at)["Conversión (15 días)"] == "0 % · 0 de 1"
 
 
 def test_agenda_no_incluye_a_rosa_sin_compras():
@@ -264,13 +258,10 @@ def test_sin_telefono_se_puede_ver_el_mensaje(tmp_path, monkeypatch):
     assert any("no tiene teléfono" in c.value for c in at.caption)
 
 
-def test_la_leyenda_explica_la_conversion():
-    leyenda = " ".join(c.value for c in abrir().caption)
-    assert "Valor en pedidos" not in leyenda
-    assert (
-        "**Conversión:** de los clientes a los que les escribiste y marcaste con «Registrar contacto», "
-        "qué parte compró en los 15 días siguientes (si escribes a 10 y compran 3, es 30 %)."
-    ) in leyenda
+def test_la_agenda_no_muestra_la_conversion():
+    at = abrir()
+    assert "Conversión (15 días)" not in indicadores(at)
+    assert not any("onversión" in c.value or "Valor en pedidos" in c.value for c in at.caption)
 
 
 def test_filtrar_la_agenda_por_tipo_de_accion():
