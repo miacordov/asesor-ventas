@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from ventas.cargador import Datos, ErrorDatos, cargar_todo
+from ventas.combos import Combo
 from ventas.modelos import ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
 from ventas.propuestas import LineaPropuesta, Propuesta
@@ -432,3 +433,38 @@ def test_restablecer_los_datos_borra_las_propuestas(repo_con_datos, datos):
     repo_con_datos.guardar_propuesta(propuesta())
     repo_con_datos.reemplazar_todo(datos)
     assert repo_con_datos.cargar_propuestas() == ()
+
+
+# =====================================================================
+# Combos guardados para pasar a ventas
+# =====================================================================
+def test_guardar_y_leer_un_combo(repo_con_datos):
+    combo = Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5))
+    repo_con_datos.agregar_combo(combo)
+    assert repo_con_datos.cargar_combos() == (combo,)
+    assert repo_con_datos.siguiente_id("cb") == "cb002"
+
+
+def test_registrar_combo_es_todo_o_nada(repo_con_datos):
+    repo_con_datos.agregar_combo(Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5)))
+    n = len(repo_con_datos.cargar_todo().ventas)
+    repetida = venta(id_venta="v001", producto="p002")  # v001 ya existe
+    with pytest.raises(ErrorDatos):
+        repo_con_datos.registrar_combo("cb001", (venta(id_venta="v900", producto="p009"), repetida))
+    assert len(repo_con_datos.cargar_todo().ventas) == n
+    assert repo_con_datos.cargar_combos()[0].pendiente
+
+
+def test_anular_las_ventas_de_un_combo_lo_deja_pendiente(repo_con_datos):
+    repo_con_datos.agregar_combo(Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5)))
+    repo_con_datos.registrar_combo("cb001", (venta("v900", producto="p002"), venta("v901", producto="p009")))
+    assert repo_con_datos.cargar_combos()[0].ids_ventas == ("v900", "v901")
+    repo_con_datos.eliminar_venta("v900")
+    repo_con_datos.eliminar_venta("v901")
+    assert repo_con_datos.cargar_combos()[0].pendiente
+
+
+def test_restablecer_los_datos_borra_los_combos(repo_con_datos, datos):
+    repo_con_datos.agregar_combo(Combo("cb001", "c001", ("p002", "p009"), date(2026, 10, 5)))
+    repo_con_datos.reemplazar_todo(datos)
+    assert repo_con_datos.cargar_combos() == ()

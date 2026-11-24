@@ -13,6 +13,7 @@ from interfaz import comun, estilo
 from interfaz.comun import dinero, dinero_corto, nombre_categoria
 from ventas import administracion as admin
 from ventas import analisis
+from ventas.combos import lineas_combo, total_combo
 from ventas.funcional import UMBRAL_FRECUENTE
 from ventas.modelos import ClienteFrecuente
 from ventas.ofertas import ofertas_vigentes
@@ -475,11 +476,104 @@ def pagina_ventas() -> None:
         "Registra una venta y la agenda se recalcula al instante; consulta, filtra y anula desde el historial.",
     )
     datos, hoy = comun.datos(), comun.fecha_referencia()
-    registrar, historial = st.tabs(["Registrar venta", "Historial"])
+    pendientes = [c for c in comun.combos() if c.pendiente]
+    registrar, combos, historial = st.tabs(
+        ["Registrar venta", f"Combos por registrar ({len(pendientes)})", "Historial"]
+    )
     with registrar:
         formulario_venta(datos, hoy)
+    with combos:
+        combos_por_registrar(datos, pendientes, hoy)
     with historial:
         historial_ventas(datos)
+
+
+def combos_por_registrar(datos, pendientes, hoy) -> None:
+    if not pendientes:
+        st.info(
+            "No hay combos por registrar. Guárdalos desde Asesoría › Arma mi pedido con «Guardar combinación».",
+            icon=":material/shopping_cart:",
+        )
+        return
+    if not comun.fecha_valida(datos, hoy):
+        return
+    vigentes = ofertas_vigentes(comun.ofertas(), hoy)
+    clientes = {c.id_cliente: c.nombre for c in datos.clientes}
+    for combo in pendientes:
+        lineas = lineas_combo(combo, datos.productos, vigentes)
+        with st.container(border=True, key=f"combo_{combo.id_combo}"):
+            st.markdown(f"**Combo {combo.id_combo} · {clientes[combo.id_cliente]}** · guardado el {combo.fecha:%d/%m/%Y}")
+            filas = "".join(
+                estilo.fila_producto(
+                    linea.producto.nombre,
+                    linea.producto.categoria,
+                    dinero(linea.precio),
+                    f"Oferta -{linea.oferta.porcentaje} % hasta el {linea.oferta.hasta:%d/%m/%Y} · antes {dinero(linea.producto.precio)}"
+                    if linea.oferta
+                    else nombre_categoria(linea.producto.categoria),
+                )
+                for linea in lineas
+            )
+            normal = round(sum(linea.producto.precio for linea in lineas), 2)
+            total = total_combo(lineas)
+            if total < normal:
+                cierre = estilo.total("Total", dinero(total), tachado=dinero(normal), nota=f"Ahorras {dinero(normal - total)} con las ofertas vigentes")
+            else:
+                cierre = estilo.total("Total", dinero(total))
+            st.markdown(filas + cierre, unsafe_allow_html=True)
+            if len(lineas) < len(combo.ids_productos):
+                st.warning("Este combo tiene productos que ya no están en el catálogo: descártalo.", icon=":material/warning:")
+            registrar, descartar = st.columns([1, 1])
+            registrar.button(
+                "Registrar venta",
+                key=f"registrar_combo_{combo.id_combo}",
+                type="primary",
+                icon=":material/add_circle:",
+                on_click=_registrar_combo,
+                args=(combo.id_combo, hoy),
+                disabled=len(lineas) < len(combo.ids_productos),
+                width="stretch",
+            )
+            descartar.button(
+                "Descartar",
+                key=f"descartar_combo_{combo.id_combo}",
+                on_click=_descartar_combo,
+                args=(combo.id_combo,),
+                width="stretch",
+            )
+    st.caption("Cada producto se registra al precio de la fecha de referencia: con su oferta si sigue vigente.")
+
+
+def _registrar_combo(id_combo: str, hoy) -> None:
+    repo = _repo()
+    try:
+        motor, candado = comun.motor_y_candado()
+        with candado:
+            antes = acciones_por_cliente(repo.cargar_todo(), hoy, motor)
+        ventas = admin.registrar_combo(repo, id_combo, hoy)
+        datos = repo.cargar_todo()
+        with candado:
+            despues = acciones_por_cliente(datos, hoy, motor)
+    except ValueError as error:
+        comun.avisar("error", str(error))
+        return
+    id_cliente = ventas[0].id_cliente
+    nombre = next(c.nombre for c in datos.clientes if c.id_cliente == id_cliente)
+    total = round(sum(v.monto for v in ventas), 2)
+    cambio = describir_cambio_agenda(nombre, antes.get(id_cliente), despues.get(id_cliente))
+    comun.avisar(
+        "exito",
+        f"Combo {id_combo} registrado para {nombre} por {dinero(total)}: ventas {', '.join(v.id_venta for v in ventas)}. {cambio}",
+    )
+
+
+def _descartar_combo(id_combo: str) -> None:
+    try:
+        admin.descartar_combo(_repo(), id_combo)
+    except ValueError as error:
+        comun.avisar("error", str(error))
+    else:
+        comun.avisar("exito", f"Combo {id_combo} descartado.")
 
 
 def _registrar_venta(hoy) -> None:
@@ -564,6 +658,8 @@ def historial_ventas(datos) -> None:
         st.info("Aún no hay ventas registradas.", icon=":material/info:")
         return
     df = analisis.dataframe_ventas(datos)
+    combo_de = {id_venta: c.id_combo for c in comun.combos() for id_venta in c.ids_ventas}
+    df["combo"] = df["id_venta"].map(combo_de).fillna("")
     izquierda, derecha = st.columns(2)
     cliente = izquierda.selectbox("Cliente", ["Todos", *sorted(df["cliente"].unique())], key="filtro_venta_cliente")
     categoria = derecha.selectbox(
@@ -575,12 +671,13 @@ def historial_ventas(datos) -> None:
     if categoria != "Todas":
         filtrado = filtrado[filtrado["categoria"] == categoria]
     filtrado = filtrado.sort_values(["fecha", "id_venta"], ascending=False)
-    tabla = filtrado[["id_venta", "fecha", "cliente", "producto", "cantidad", "precio_unitario", "monto"]]
+    tabla = filtrado[["id_venta", "combo", "fecha", "cliente", "producto", "cantidad", "precio_unitario", "monto"]]
     st.dataframe(
         tabla,
         hide_index=True,
         column_config={
             "id_venta": st.column_config.TextColumn("N.º"),
+            "combo": st.column_config.TextColumn("Combo", help="Combinación de «Arma mi pedido» con la que se registró."),
             "fecha": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
             "cliente": st.column_config.TextColumn("Cliente"),
             "producto": st.column_config.TextColumn("Producto"),

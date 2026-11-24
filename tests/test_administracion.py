@@ -8,10 +8,12 @@ from ventas.administracion import (
     asegurar_datos,
     crear_cliente,
     crear_producto,
+    descartar_combo,
     editar_cliente,
     editar_producto,
     eliminar_cliente,
     eliminar_producto,
+    guardar_combo,
     guardar_propuesta,
     limpiar_nombre,
     normalizar_categoria,
@@ -19,6 +21,7 @@ from ventas.administracion import (
     poner_oferta,
     quitar_oferta,
     quitar_propuesta,
+    registrar_combo,
     registrar_venta,
     sembrar,
 )
@@ -393,3 +396,63 @@ def test_quitar_propuesta(repo):
     guardar_propuesta(repo, "c001", ["p005", "p009"], 0, HOY, {})
     quitar_propuesta(repo, "c001")
     assert repo.cargar_propuestas() == ()
+
+
+# =====================================================================
+# Combos de «Arma mi pedido» → ventas
+# =====================================================================
+def test_guardar_combos_les_da_ids_correlativos(repo):
+    primero = guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    segundo = guardar_combo(repo, "c002", ["p003", "p007"], HOY)
+    assert (primero.id_combo, segundo.id_combo) == ("cb001", "cb002")
+    assert repo.cargar_combos() == (primero, segundo)
+    assert primero.pendiente
+
+
+def test_combo_para_cliente_o_producto_inexistente(repo):
+    with pytest.raises(ErrorDatos, match="No existe el cliente c999"):
+        guardar_combo(repo, "c999", ["p002", "p009"], HOY)
+    with pytest.raises(ErrorDatos, match="No existe el producto p999"):
+        guardar_combo(repo, "c001", ["p002", "p999"], HOY)
+    assert repo.cargar_combos() == ()
+
+
+def test_registrar_un_combo_con_oferta_vigente(repo):
+    from ventas.ofertas import Oferta
+
+    repo.guardar_oferta(Oferta("p002", 20, date(2026, 10, 1), date(2026, 10, 31)))  # mouse 45 -> 36
+    guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    n = len(repo.cargar_todo().ventas)  # 30 ventas: v001..v030
+    ventas = registrar_combo(repo, "cb001", HOY)
+    assert [(v.id_venta, v.id_producto, v.cantidad, v.precio_unitario, v.fecha) for v in ventas] == [
+        ("v031", "p002", 1, 36.0, HOY),
+        ("v032", "p009", 1, 60.0, HOY),
+    ]
+    assert len(repo.cargar_todo().ventas) == n + 2
+    (combo,) = repo.cargar_combos()
+    assert combo.ids_ventas == ("v031", "v032") and not combo.pendiente
+
+
+def test_si_la_oferta_vencio_se_registra_al_precio_normal(repo):
+    from ventas.ofertas import Oferta
+
+    repo.guardar_oferta(Oferta("p002", 20, date(2026, 10, 1), date(2026, 10, 4)))
+    guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    assert [v.precio_unitario for v in registrar_combo(repo, "cb001", HOY)] == [45.0, 60.0]
+
+
+def test_un_combo_no_se_registra_dos_veces(repo):
+    guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    registrar_combo(repo, "cb001", HOY)
+    with pytest.raises(ValueError, match="ya se registró"):
+        registrar_combo(repo, "cb001", HOY)
+
+
+def test_descartar_un_combo_pendiente_pero_no_uno_registrado(repo):
+    guardar_combo(repo, "c001", ["p002", "p009"], HOY)
+    guardar_combo(repo, "c001", ["p003", "p007"], HOY)
+    descartar_combo(repo, "cb001")
+    assert [c.id_combo for c in repo.cargar_combos()] == ["cb002"]
+    registrar_combo(repo, "cb002", HOY)
+    with pytest.raises(ErrorDatos, match="anula sus ventas"):
+        descartar_combo(repo, "cb002")

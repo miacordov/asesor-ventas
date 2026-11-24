@@ -12,9 +12,10 @@ from datetime import date
 from pathlib import Path
 
 from ventas.cargador import ErrorDatos, cargar_todo
+from ventas.combos import Combo, lineas_combo, ventas_del_combo
 from ventas.mensajes import validar_telefono
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
-from ventas.ofertas import Oferta
+from ventas.ofertas import Oferta, ofertas_vigentes
 from ventas.propuestas import Propuesta, armar_propuesta
 from ventas.repositorio import Repositorio
 
@@ -164,6 +165,43 @@ def guardar_propuesta(
 
 def quitar_propuesta(repo: Repositorio, id_cliente: str) -> None:
     repo.eliminar_propuesta(id_cliente)
+
+
+# ---------------------------------------------------------------------
+# Combos de «Arma mi pedido» que pasan a ventas
+# ---------------------------------------------------------------------
+def guardar_combo(repo: Repositorio, id_cliente: str, ids_productos: list[str], hoy: date) -> Combo:
+    """Guarda la combinación elegida para el cliente con un id nuevo (cb001, cb002...)."""
+    datos = repo.cargar_todo()
+    _buscar(datos.clientes, "id_cliente", id_cliente, "cliente")
+    for id_producto in ids_productos:
+        _buscar(datos.productos, "id_producto", id_producto, "producto")
+    combo = Combo(repo.siguiente_id("cb"), id_cliente, tuple(ids_productos), hoy)
+    repo.agregar_combo(combo)
+    return combo
+
+
+def _combo(repo: Repositorio, id_combo: str) -> Combo:
+    return _buscar(repo.cargar_combos(), "id_combo", id_combo, "combo")
+
+
+def registrar_combo(repo: Repositorio, id_combo: str, fecha: date) -> tuple[Venta, ...]:
+    """Registra el combo como ventas (una por producto) al precio de `fecha`:
+    con la oferta de cada producto si sigue vigente ese día."""
+    combo = _combo(repo, id_combo)
+    lineas = lineas_combo(combo, repo.cargar_todo().productos, ofertas_vigentes(repo.cargar_ofertas(), fecha))
+    primero = int(repo.siguiente_id("v")[1:])
+    ids_ventas = [f"v{primero + i:03d}" for i in range(len(lineas))]
+    ventas = ventas_del_combo(combo, lineas, ids_ventas, fecha)
+    repo.registrar_combo(id_combo, ventas)
+    return ventas
+
+
+def descartar_combo(repo: Repositorio, id_combo: str) -> None:
+    """Quita un combo pendiente (uno ya registrado se anula desde sus ventas)."""
+    if not _combo(repo, id_combo).pendiente:
+        raise ErrorDatos(f"El combo {id_combo} ya se registró: para deshacerlo anula sus ventas.")
+    repo.eliminar_combo(id_combo)
 
 
 def sembrar(repo: Repositorio, directorio: str | Path) -> None:
