@@ -8,7 +8,7 @@ from ventas.cargador import cargar_todo
 from ventas.logico import MotorLogico, PuenteProlog, pares_compra
 from ventas.modelos import Venta
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 CLIENTES = ["c001", "c002", "c003", "c004", "c005", "c006", "c007", "c008"]
 
 

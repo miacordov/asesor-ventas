@@ -15,7 +15,7 @@ from functools import reduce
 from itertools import combinations
 
 from ventas.funcional import PerfilCliente, precio_con_descuento
-from ventas.logico import MotorPedidos
+from ventas.logico import MINIMO_PRODUCTOS, MotorPedidos
 from ventas.modelos import Cliente, Producto, Recomendacion
 
 MAX_CATEGORIAS = 3  # un pedido sugerido combina como máximo 3 categorías
@@ -93,6 +93,13 @@ def categorias_alcanzables(
     return tuple(c for c in categorias if minimos.get(c, math.inf) <= presupuesto)
 
 
+def categorias_para_combinar(categorias: Iterable[str]) -> tuple[str, ...]:
+    """Una sola categoría se pide dos veces: así la combinación junta dos
+    productos distintos de ella. Con dos o más, quedan igual."""
+    categorias = tuple(categorias)
+    return categorias * MINIMO_PRODUCTOS if len(categorias) == 1 else categorias
+
+
 def puntaje(ids: Iterable[str], recomendaciones: Iterable[Recomendacion]) -> float:
     """Suma de la confianza de los productos recomendados que el pedido incluye."""
     ids = frozenset(ids)
@@ -129,13 +136,18 @@ def pedidos_para_cliente(
     )[:MAX_CATEGORIAS]
 
     # Se intenta cubrir todas las categorías; si no cabe en el presupuesto, se
-    # prueban subconjuntos cada vez más chicos (conservando el orden de confianza)
-    # hasta encontrar combinaciones.
+    # prueban subconjuntos cada vez más chicos (conservando el orden de confianza),
+    # nunca de menos de MINIMO_PRODUCTOS categorías. Como último recurso, dos
+    # productos de una misma categoría. Un producto solo no es una combinación.
     motor.cargar_catalogo(productos)
+    subconjuntos = [
+        subconjunto
+        for k in range(len(categorias), MINIMO_PRODUCTOS - 1, -1)
+        for subconjunto in combinations(categorias, k)
+    ] + [categorias_para_combinar((c,)) for c in categorias]
     intentos = (
         motor.armar_pedidos(presupuesto, subconjunto, id_cliente=cliente.id_cliente)
-        for k in range(len(categorias), 0, -1)
-        for subconjunto in combinations(categorias, k)
+        for subconjunto in subconjuntos
     )
     combinaciones = next((c for c in intentos if c), ())
 
@@ -167,10 +179,11 @@ def armar_pedido_manual(
     n: int = 5,
 ) -> tuple[Pedido, ...]:
     """Modo mostrador: el vendedor indica presupuesto y categorías. Se muestran
-    primero los pedidos que más aprovechan el presupuesto."""
+    primero los pedidos que más aprovechan el presupuesto. Con una sola
+    categoría se combinan dos productos de ella."""
     productos = tuple(productos)
     motor.cargar_catalogo(productos)
-    combinaciones = motor.armar_pedidos(presupuesto, categorias)
+    combinaciones = motor.armar_pedidos(presupuesto, categorias_para_combinar(categorias))
     por_id = {p.id_producto: p for p in productos}
     pedidos = (Pedido(tuple(por_id[i] for i in ids)) for ids in combinaciones)
     return tuple(sorted(pedidos, key=lambda p: (-p.subtotal, p.ids))[: max(n, 0)])

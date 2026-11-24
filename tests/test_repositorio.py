@@ -8,7 +8,7 @@ from ventas.cargador import Datos, ErrorDatos, cargar_todo
 from ventas.modelos import ClienteRegular, Producto, Venta
 from ventas.repositorio import Repositorio, RepositorioSQLite
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 
 
 @pytest.fixture

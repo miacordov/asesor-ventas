@@ -117,7 +117,7 @@ def test_la_fecha_de_referencia_por_defecto_es_la_de_la_demostracion():
 
 def test_datos_de_ejemplo_invalidos_muestran_un_mensaje_claro(tmp_path, monkeypatch):
     for nombre in ("clientes.csv", "productos.csv"):
-        shutil.copy(RAIZ / "datos" / nombre, tmp_path / nombre)
+        shutil.copy(RAIZ / "tests" / "datos" / nombre, tmp_path / nombre)
     (tmp_path / "ventas.csv").write_text(
         "id_venta,id_cliente,id_producto,cantidad,precio_unitario,fecha\nv001,c001,p001,dos,10,2026-09-01\n",
         encoding="utf-8",
@@ -162,7 +162,7 @@ def test_agenda_indicadores_calculados_a_mano():
         "Por reactivar": "2",
         "Por fidelizar": "3",
         "Complementar": "2",
-        "Valor en pedidos sugeridos": "S/ 1,770.50",  # 607.50+261+382.50+108+76.50+110+225
+        "Valor en pedidos sugeridos": "S/ 1,476.00",  # 607.50+261+382.50+225 (Ana, Lucía y Carlos sin combinación)
     }
 
 
@@ -184,7 +184,7 @@ def test_la_tarjeta_muestra_motivo_y_pedido_con_descuento():
     at = abrir()
     assert "Compró 3 veces, lleva 40 días sin comprar" in [m.value for m in at.markdown]
     assert ("S/ 675.00", "S/ 607.50") in totales(at)  # Juan: precio tachado y total con descuento
-    assert ("", "S/ 110.00") in totales(at)  # Carlos es regular: sin descuento
+    assert ("", "S/ 225.00") in totales(at)  # Luis es regular: sin descuento
     assert any("Ahorras S/ 67.50 (10 % de descuento)" in m.value for m in at.markdown)
 
 
@@ -247,6 +247,22 @@ def test_el_presupuesto_limita_las_combinaciones(presupuesto, combinaciones):
     assert ok(at)
     assert len([m for m in at.markdown if m.value.startswith("**Opción")]) == combinaciones
     assert len(at.warning) == (1 if combinaciones == 0 else 0)
+
+
+def test_si_solo_alcanza_un_producto_no_muestra_combinaciones():
+    # Audio tiene un único producto (S/ 95): sin pareja no hay combinación.
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value(["audio"]).run()
+    assert ok(at)
+    assert not [m for m in at.markdown if m.value.startswith("**Opción")]
+    assert "al menos 2 productos" in at.warning[0].value
+
+
+def test_una_sola_categoria_combina_dos_productos_de_ella():
+    at = abrir("pedido")
+    at.get("button_group")[0].set_value(["perifericos"]).run()
+    opciones = [m.value for m in at.markdown if m.value.startswith("**Opción")]
+    assert opciones == ["**Opción 1 · S/ 165.00** · sobran S/ 35.00", "**Opción 2 · S/ 155.00** · sobran S/ 45.00"]
 
 
 def test_sin_categorias_pide_elegir_al_menos_una():

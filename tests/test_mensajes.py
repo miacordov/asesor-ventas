@@ -23,7 +23,7 @@ from ventas.mensajes import (
 )
 from ventas.modelos import ClienteFrecuente, ClienteRegular
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 
@@ -215,11 +215,12 @@ def test_mensaje_de_juan_reactivar_con_descuento(mensajes):
     )
 
 
-def test_mensaje_de_ana_fidelizar_con_un_solo_producto(mensajes):
+def test_mensaje_de_ana_sin_combinacion_menciona_sus_recomendaciones(mensajes):
+    # Con S/ 126 solo le cabe el teclado: un producto solo no es combinación.
     ana = next(m for m in mensajes if m.id_cliente == "c004")
     assert ana.texto == (
         "Hola Ana, gracias por seguir eligiéndonos. "
-        "Te armamos esta propuesta: Teclado mecánico por S/ 120.00 (S/ 108.00 con tu descuento del 10 %). "
+        "Creemos que te pueden interesar: Teclado mecánico, Laptop 14 pulgadas y Monitor 24 pulgadas. "
         "¡Gracias por tu confianza!"
     )
 
@@ -228,13 +229,15 @@ def test_cliente_regular_no_menciona_descuento(mensajes):
     carlos = next(m for m in mensajes if m.id_cliente == "c003")
     assert carlos.texto == (
         "Hola Carlos, por lo que has comprado con nosotros, creemos que podemos ayudarte. "
-        "Te armamos esta propuesta: Webcam HD por S/ 110.00. ¡Cuéntanos si te interesa!"
+        "Creemos que te pueden interesar: Laptop 14 pulgadas, Monitor 24 pulgadas y Webcam HD. "
+        "¡Cuéntanos si te interesa!"
     )
     assert "descuento" not in carlos.texto
 
 
 def test_todos_los_clientes_frecuentes_mencionan_su_descuento(datos, mensajes):
-    frecuentes = {"c001", "c002", "c004", "c007", "c008"}
+    # Ana (c004) y Lucía (c008) son frecuentes pero no tienen combinación que proponer.
+    frecuentes = {"c001", "c002", "c007"}
     for m in mensajes:
         assert ("descuento del 10 %" in m.texto) is (m.id_cliente in frecuentes)
 

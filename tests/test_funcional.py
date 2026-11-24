@@ -30,7 +30,7 @@ from ventas.funcional import (
 )
 from ventas.modelos import ClienteFrecuente, ClienteRegular, Venta
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 

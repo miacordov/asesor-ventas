@@ -110,7 +110,7 @@ def filas_html(productos) -> str:
 
 def mostrar_pedido_resumido(t: TarjetaAgenda) -> None:
     if not t.pedidos:
-        st.caption("No hay un pedido sugerido dentro del presupuesto habitual de este cliente.")
+        st.caption("No hay una combinación de al menos 2 productos dentro del presupuesto habitual de este cliente.")
         return
     mejor = t.pedidos[0]
     subtotal, total = mejor.pedido.subtotal, mejor.total_con_descuento
@@ -190,7 +190,10 @@ def pagina_pedido() -> None:
                 format_func=nombre_categoria,
                 key="categorias_pedido",
             )
-            st.caption("Se arma un producto por cada categoría elegida, sin repetir y sin pasarse del presupuesto.")
+            st.caption(
+                "Cada combinación lleva al menos 2 productos: uno por cada categoría elegida "
+                "(con una sola categoría, dos de ella), sin repetir y sin pasarse del presupuesto."
+            )
     with derecha:
         if not elegidas:
             st.info("Elige al menos una categoría para ver combinaciones.", icon=":material/touch_app:")
@@ -199,7 +202,11 @@ def pagina_pedido() -> None:
         with candado:
             pedidos = armar_pedido_manual(motor, datos.productos, presupuesto, list(elegidas), n=5)
         if not pedidos:
-            st.warning("Ninguna combinación cabe en ese presupuesto. Prueba con más dinero o con menos categorías.", icon=":material/search_off:")
+            st.warning(
+                "Ninguna combinación de al menos 2 productos cabe en ese presupuesto. "
+                "Prueba con más dinero o con otras categorías.",
+                icon=":material/search_off:",
+            )
             return
         st.subheader(f"{len(pedidos)} combinaciones")
         st.caption("De la que más aprovecha el presupuesto a la que menos.")

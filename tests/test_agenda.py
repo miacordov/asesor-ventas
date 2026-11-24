@@ -19,7 +19,7 @@ from ventas.funcional import PerfilCliente, perfil_cliente, perfiles
 from ventas.logico import MotorLogico, PuenteProlog
 from ventas.modelos import Venta
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 

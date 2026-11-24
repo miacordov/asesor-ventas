@@ -30,7 +30,7 @@ from ventas.funcional import (
     ventas_por_categoria as categorias_funcional,
 )
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 

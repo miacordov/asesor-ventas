@@ -20,7 +20,7 @@ from ventas.pedido import (
     puntaje,
 )
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 
@@ -63,7 +63,7 @@ def oraculo_pedidos(productos, ventas, presupuesto, categorias, id_cliente=None)
     resultado = set()
     for combo in itertools.product(*opciones):
         ids = [p.id_producto for p in combo]
-        if len(set(ids)) == len(ids) and sum(round(p.precio * 100) for p in combo) <= limite:
+        if len(ids) >= 2 and len(set(ids)) == len(ids) and sum(round(p.precio * 100) for p in combo) <= limite:
             resultado.add(tuple(sorted(ids)))
     return tuple(sorted(resultado))
 
@@ -123,16 +123,24 @@ def test_los_precios_con_decimales_no_fallan_por_redondeo(motor):
 def test_los_centavos_se_redondean_no_se_truncan(motor):
     # 0.57 * 100 = 56.99999999999999 y 0.56 * 100 = 56.00000000000001. Truncando,
     # ambos darían 56 y un producto de S/ 0.57 "cabría" en un presupuesto de S/ 0.56.
-    motor.cargar_catalogo([Producto("p001", "a", "a", 0.57)])
-    assert motor.armar_pedidos(0.56, ["a"]) == ()
-    assert motor.armar_pedidos(0.57, ["a"]) == (("p001",),)
+    # Igual con 0.29 * 100 = 28.999999999999996: truncando, 0.28 + 0.29 "cabría" en 0.56.
+    motor.cargar_catalogo([Producto("p001", "a", "a", 0.28), Producto("p002", "b", "b", 0.29)])
+    assert motor.armar_pedidos(0.56, ["a", "b"]) == ()
+    assert motor.armar_pedidos(0.57, ["a", "b"]) == (("p001", "p002"),)
 
 
 def test_cargar_catalogo_reemplaza_el_anterior(motor, datos):
     motor.cargar_catalogo(datos.productos)
-    motor.cargar_catalogo([Producto("p001", "Solo", "unica", 10.0)])
-    assert motor.armar_pedidos(100, ["perifericos"]) == ()
-    assert motor.armar_pedidos(100, ["unica"]) == (("p001",),)
+    motor.cargar_catalogo([Producto("p001", "Solo", "unica", 10.0), Producto("p002", "Otro", "otra", 5.0)])
+    assert motor.armar_pedidos(100, ["perifericos", "accesorios"]) == ()
+    assert motor.armar_pedidos(100, ["unica", "otra"]) == (("p001", "p002"),)
+
+
+def test_un_solo_producto_no_es_una_combinacion(motor, datos):
+    # Una combinación lleva al menos 2 productos: una sola categoría no alcanza.
+    motor.cargar_catalogo(datos.productos)
+    assert motor.armar_pedidos(5000, ["perifericos"]) == ()
+    assert motor.armar_pedidos(5000, ["perifericos", "perifericos"]) != ()
 
 
 @pytest.mark.parametrize(
@@ -160,16 +168,16 @@ def test_excluye_lo_que_el_cliente_ya_compro(motor, datos):
     motor.cargar_catalogo(datos.productos)
     motor.cargar_compras(datos.ventas)
     # Juan (c001) ya compró el accesorio p007; sin él, solo queda p009.
-    sin_filtro = motor.armar_pedidos(200, ["accesorios"])
-    para_juan = motor.armar_pedidos(200, ["accesorios"], id_cliente="c001")
-    assert sin_filtro == (("p007",), ("p009",))
-    assert para_juan == (("p009",),)
+    sin_filtro = motor.armar_pedidos(200, ["accesorios", "audio"])
+    para_juan = motor.armar_pedidos(200, ["accesorios", "audio"], id_cliente="c001")
+    assert sin_filtro == (("p005", "p007"), ("p005", "p009"))
+    assert para_juan == (("p005", "p009"),)
 
 
 def test_cliente_desconocido_no_excluye_nada(motor, datos):
     motor.cargar_catalogo(datos.productos)
     motor.cargar_compras(datos.ventas)
-    assert motor.armar_pedidos(200, ["accesorios"], id_cliente="c999") == (("p007",), ("p009",))
+    assert motor.armar_pedidos(200, ["accesorios", "audio"], id_cliente="c999") == (("p005", "p007"), ("p005", "p009"))
 
 
 def test_limite_de_combinaciones(motor, datos):
@@ -307,20 +315,17 @@ def test_pedido_de_maria(datos, motor):
     assert sugerido.total_con_descuento == 382.5
 
 
-def test_cliente_regular_no_recibe_descuento(datos, motor):
+def test_sin_dos_productos_que_quepan_no_se_sugiere_pedido(datos, motor):
     # Carlos (c003): presupuesto 176. Computo, monitores y almacenamiento no caben;
-    # de perifericos (p002 y p003 ya los tiene) queda p006 = 110.
-    (sugerido,) = sugeridos(datos, motor, "c003")
-    assert sugerido.pedido.ids == ("p006",)
-    assert sugerido.total_con_descuento == 110.0
+    # de perifericos (p002 y p003 ya los tiene) solo queda p006 = 110: un producto
+    # solo no es una combinación.
+    assert sugeridos(datos, motor, "c003") == ()
 
 
-def test_respaldo_con_menos_categorias(datos, motor):
-    # Lucía (c008): presupuesto 114. El periférico recomendado (p003 = 120) no cabe,
-    # así que se ofrece solo el accesorio p007 = 85, con 10% de descuento.
-    (sugerido,) = sugeridos(datos, motor, "c008")
-    assert sugerido.pedido.ids == ("p007",)
-    assert sugerido.total_con_descuento == 76.5
+def test_respaldo_nunca_baja_a_un_solo_producto(datos, motor):
+    # Lucía (c008): presupuesto 114. El periférico recomendado (p003 = 120) no cabe y
+    # dos accesorios (p007 + p009 = 145) tampoco: antes se ofrecía p007 solo.
+    assert sugeridos(datos, motor, "c008") == ()
 
 
 def test_varios_pedidos_ordenados_por_puntaje(datos, motor):
@@ -341,10 +346,10 @@ def test_limite_de_pedidos_sugeridos(datos, motor):
 
 
 def test_margen_mayor_amplia_las_opciones(datos, motor):
-    base = sugeridos(datos, motor, "c004")  # presupuesto 126: solo p003
-    amplio = sugeridos(datos, motor, "c004", margen=5.0)  # presupuesto 683: caben más
-    assert base[0].presupuesto == 126.0 and amplio[0].presupuesto == 683.0
-    assert len(amplio[0].pedido.ids) > len(base[0].pedido.ids)
+    base = sugeridos(datos, motor, "c004")  # presupuesto 126: solo cabe p003, sin pareja
+    amplio = sugeridos(datos, motor, "c004", margen=5.0)  # presupuesto 683: caben combinaciones
+    assert base == ()
+    assert amplio[0].presupuesto == 683.0 and len(amplio[0].pedido.ids) >= 2
 
 
 def test_cliente_sin_compras_o_sin_recomendaciones(datos, motor):
@@ -358,8 +363,10 @@ def test_cliente_sin_compras_o_sin_recomendaciones(datos, motor):
 def test_invariantes_de_todos_los_pedidos(datos, motor, id_cliente):
     propios = {v.id_producto for v in datos.ventas if v.id_cliente == id_cliente}
     resultado = sugeridos(datos, motor, id_cliente)
-    assert resultado, "todos los clientes del dataset deben recibir al menos un pedido"
+    # Carlos, Ana y Lucía no tienen dos productos que quepan juntos en su presupuesto.
+    assert bool(resultado) == (id_cliente not in {"c003", "c004", "c008"})
     for s in resultado:
+        assert len(s.pedido.ids) >= 2
         assert s.pedido.subtotal <= s.presupuesto
         assert not set(s.pedido.ids) & propios
         assert len(set(s.pedido.ids)) == len(s.pedido.ids)
@@ -380,8 +387,9 @@ def test_desempate_prefiere_el_pedido_de_mayor_valor():
     rec = Recomendacion("c001", "p001", soporte=1, confianza=0.5)
     cliente = ClienteRegular("c001", "Juan")
     resultado = pedidos_para_cliente(cliente, perfil, [rec], productos, puente, n=3)
-    # p001 es el recomendado (puntaje 0.5) y va primero; luego, de mayor a menor valor.
-    assert [s.pedido.ids for s in resultado] == [("p001",), ("p002",), ("p003",)]
+    # Presupuesto 44: p002 + p003 = 50 no cabe. Ambas parejas llevan el recomendado
+    # p001 (mismo puntaje), así que gana la de mayor valor.
+    assert [s.pedido.ids for s in resultado] == [("p001", "p002"), ("p001", "p003")]
 
 
 # =====================================================================
@@ -409,5 +417,18 @@ def test_pedido_manual_sin_resultados(datos, motor):
 
 
 def test_pedido_manual_acepta_generadores(datos, motor):
-    resultado = armar_pedido_manual(motor, iter(datos.productos), 200, iter(["audio"]))
-    assert [p.ids for p in resultado] == [("p005",)]
+    resultado = armar_pedido_manual(motor, iter(datos.productos), 200, iter(["perifericos", "accesorios"]))
+    assert len(resultado) == 5
+
+
+def test_pedido_manual_con_una_categoria_combina_dos_productos_de_ella(datos, motor):
+    # Periféricos: p002 = 45, p003 = 120, p006 = 110. p003 + p006 = 230 no cabe en 200.
+    resultado = armar_pedido_manual(motor, datos.productos, 200, ["perifericos"])
+    assert [(p.ids, p.subtotal) for p in resultado] == [(("p002", "p003"), 165.0), (("p002", "p006"), 155.0)]
+
+
+def test_pedido_manual_si_solo_alcanza_un_producto_no_hay_combinacion(datos, motor):
+    # Audio tiene un solo producto (p005 = 95): con S/ 200 no hay con qué combinarlo.
+    assert armar_pedido_manual(motor, datos.productos, 200, ["audio"]) == ()
+    # Periféricos + monitores: el monitor (520) no cabe; un periférico solo no es combinación.
+    assert armar_pedido_manual(motor, datos.productos, 200, ["perifericos", "monitores"]) == ()

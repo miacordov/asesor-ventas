@@ -23,7 +23,7 @@ from ventas.logico import PuenteProlog
 from ventas.repositorio import RepositorioSQLite
 from ventas.servicio import construir_tarjetas
 
-DATOS = Path(__file__).resolve().parent.parent / "datos"
+DATOS = Path(__file__).resolve().parent / "datos"
 HOY = date(2026, 10, 5)
 
 
