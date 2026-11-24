@@ -15,11 +15,17 @@ from abc import ABC, abstractmethod
 from datetime import date
 
 from ventas.cargador import Datos, ErrorDatos
+from ventas.combos import Combo
 from ventas.modelos import Cliente, ClienteRegular, Producto, Venta
 from ventas.ofertas import Oferta
 from ventas.propuestas import LineaPropuesta, Propuesta
 
-_TABLAS = {"c": ("clientes", "id_cliente"), "p": ("productos", "id_producto"), "v": ("ventas", "id_venta")}
+_TABLAS = {
+    "c": ("clientes", "id_cliente"),
+    "p": ("productos", "id_producto"),
+    "v": ("ventas", "id_venta"),
+    "cb": ("combos", "id_combo"),
+}
 
 _ESQUEMA = """
 CREATE TABLE IF NOT EXISTS clientes (
@@ -59,6 +65,23 @@ CREATE TABLE IF NOT EXISTS propuesta_productos (
     precio_normal_centavos INTEGER NOT NULL CHECK (precio_normal_centavos > 0),
     precio_centavos        INTEGER NOT NULL CHECK (precio_centavos > 0),
     PRIMARY KEY (id_cliente, id_producto)
+);
+CREATE TABLE IF NOT EXISTS combos (
+    id_combo   TEXT PRIMARY KEY,
+    id_cliente TEXT NOT NULL REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+    fecha      TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS combo_productos (
+    id_combo    TEXT NOT NULL REFERENCES combos (id_combo) ON DELETE CASCADE,
+    id_producto TEXT NOT NULL REFERENCES productos (id_producto) ON DELETE CASCADE,
+    orden       INTEGER NOT NULL,
+    PRIMARY KEY (id_combo, id_producto)
+);
+CREATE TABLE IF NOT EXISTS combo_ventas (
+    id_combo TEXT NOT NULL REFERENCES combos (id_combo) ON DELETE CASCADE,
+    id_venta TEXT NOT NULL REFERENCES ventas (id_venta) ON DELETE CASCADE,
+    orden    INTEGER NOT NULL,
+    PRIMARY KEY (id_combo, id_venta)
 );
 """
 
@@ -126,6 +149,19 @@ class Repositorio(ABC):
     @abstractmethod
     def eliminar_propuesta(self, id_cliente: str) -> None: ...
 
+    @abstractmethod
+    def cargar_combos(self) -> tuple[Combo, ...]: ...
+
+    @abstractmethod
+    def agregar_combo(self, combo: Combo) -> None: ...
+
+    @abstractmethod
+    def eliminar_combo(self, id_combo: str) -> None: ...
+
+    @abstractmethod
+    def registrar_combo(self, id_combo: str, ventas: tuple[Venta, ...]) -> None:
+        """Guarda las ventas del combo y las enlaza a él, todo o nada."""
+
 
 class RepositorioSQLite(Repositorio):
     """Implementación con SQLite. Segura para varios hilos (un candado protege la conexión)."""
@@ -184,7 +220,17 @@ class RepositorioSQLite(Repositorio):
         """Sustituye todo el contenido en una sola transacción (todo o nada)."""
         try:
             with self._candado, self._con:
-                for tabla in ("propuesta_productos", "propuestas", "ofertas", "ventas", "clientes", "productos"):
+                for tabla in (
+                    "combo_ventas",
+                    "combo_productos",
+                    "combos",
+                    "propuesta_productos",
+                    "propuestas",
+                    "ofertas",
+                    "ventas",
+                    "clientes",
+                    "productos",
+                ):
                     self._con.execute(f"DELETE FROM {tabla}")
                 self._con.executemany(
                     "INSERT INTO clientes VALUES (?, ?, ?)",
@@ -326,6 +372,59 @@ class RepositorioSQLite(Repositorio):
     def eliminar_propuesta(self, id_cliente: str) -> None:
         if not self._ejecutar("DELETE FROM propuestas WHERE id_cliente = ?", (id_cliente,), "la propuesta"):
             raise ErrorDatos(f"El cliente {id_cliente} no tiene una propuesta guardada.")
+
+    # ---------- combos ----------
+    def cargar_combos(self) -> tuple[Combo, ...]:
+        """Los combos guardados. Uno que perdió productos (borrados del catálogo)
+        y quedó con menos de 2 ya no es un combo y no se devuelve."""
+        with self._candado:
+            cabeceras = self._con.execute("SELECT id_combo, id_cliente, fecha FROM combos ORDER BY id_combo").fetchall()
+            productos = self._con.execute("SELECT id_combo, id_producto FROM combo_productos ORDER BY id_combo, orden").fetchall()
+            ventas = self._con.execute("SELECT id_combo, id_venta FROM combo_ventas ORDER BY id_combo, orden").fetchall()
+        de_productos: dict[str, list[str]] = {}
+        for id_combo, id_producto in productos:
+            de_productos.setdefault(id_combo, []).append(id_producto)
+        de_ventas: dict[str, list[str]] = {}
+        for id_combo, id_venta in ventas:
+            de_ventas.setdefault(id_combo, []).append(id_venta)
+        return tuple(
+            Combo(i, c, tuple(de_productos[i]), date.fromisoformat(f), tuple(de_ventas.get(i, ())))
+            for i, c, f in cabeceras
+            if len(de_productos.get(i, ())) >= 2
+        )
+
+    def agregar_combo(self, combo: Combo) -> None:
+        try:
+            with self._candado, self._con:
+                self._con.execute("INSERT INTO combos VALUES (?, ?, ?)", (combo.id_combo, combo.id_cliente, combo.fecha.isoformat()))
+                self._con.executemany(
+                    "INSERT INTO combo_productos VALUES (?, ?, ?)",
+                    [(combo.id_combo, i, orden) for orden, i in enumerate(combo.ids_productos)],
+                )
+        except sqlite3.IntegrityError as error:
+            raise ErrorDatos(_traducir(error, f"el combo {combo.id_combo}")) from error
+
+    def eliminar_combo(self, id_combo: str) -> None:
+        if not self._ejecutar("DELETE FROM combos WHERE id_combo = ?", (id_combo,), f"el combo {id_combo}"):
+            raise ErrorDatos(f"No existe el combo {id_combo}.")
+
+    def registrar_combo(self, id_combo: str, ventas: tuple[Venta, ...]) -> None:
+        try:
+            with self._candado, self._con:
+                if not self._con.execute("SELECT 1 FROM combos WHERE id_combo = ?", (id_combo,)).fetchone():
+                    raise ErrorDatos(f"No existe el combo {id_combo}.")
+                self._con.executemany(
+                    "INSERT INTO ventas VALUES (?, ?, ?, ?, ?, ?)",
+                    [
+                        (v.id_venta, v.id_cliente, v.id_producto, v.cantidad, _centavos(v.precio_unitario), v.fecha.isoformat())
+                        for v in ventas
+                    ],
+                )
+                self._con.executemany(
+                    "INSERT INTO combo_ventas VALUES (?, ?, ?)", [(id_combo, v.id_venta, orden) for orden, v in enumerate(ventas)]
+                )
+        except sqlite3.IntegrityError as error:
+            raise ErrorDatos(_traducir(error, f"las ventas del combo {id_combo}")) from error
 
     def _eliminar(self, tabla: str, columna: str, valor: str, tabla_hija: str, nombre: str) -> None:
         with self._candado:

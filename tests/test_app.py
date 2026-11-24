@@ -317,6 +317,60 @@ def test_ofertas_de_otras_categorias_se_sugieren():
     assert any("Auriculares con micrófono (-20 %)" in i.value for i in at.info)
 
 
+def test_guardar_combinacion_pide_elegir_el_cliente():
+    at = abrir("pedido")
+    assert at.button(key="guardar_combo_1").disabled
+    at.selectbox(key="combo_cliente").set_value("c001").run()
+    assert not at.button(key="guardar_combo_1").disabled
+
+
+def guardar_combinacion(id_cliente: str = "c001", opcion: int = 1) -> AppTest:
+    at = abrir("pedido")
+    at.selectbox(key="combo_cliente").set_value(id_cliente).run()
+    return at.button(key=f"guardar_combo_{opcion}").click().run()
+
+
+def test_guardar_combinacion_la_lleva_a_ventas_con_su_id():
+    at = guardar_combinacion()
+    assert ok(at)
+    assert "Combinación cb001 guardada para Juan Pérez." in exito(at)[0]
+    at.switch_page("paginas/registro_ventas.py").run()
+    assert any(t.label == "Combos por registrar (1)" for t in at.tabs)
+    titulos = [m.value for m in at.markdown if m.value.startswith("**Combo ")]
+    assert titulos == ["**Combo cb001 · Juan Pérez** · guardado el 05/10/2026"]
+    html = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
+    assert filas_de_producto(html) == [("Webcam HD", "S/ 110.00"), ("Mochila para laptop", "S/ 85.00")]
+
+
+def test_el_combo_muestra_la_oferta_mientras_esta_vigente_y_se_vende_con_ella():
+    abrir("pedido")
+    ofertar("p002", 50)  # mouse: 45 -> 22.50 hasta el 31/10/2026; su combinación va primero
+    at = guardar_combinacion()
+    at.switch_page("paginas/registro_ventas.py").run()
+    html = " ".join(m.value for m in at.markdown if 'class="prod"' in m.value)
+    assert "Oferta -50 % hasta el 31/10/2026 · antes S/ 45.00" in html
+    assert ("S/ 130.00", "S/ 107.50") in totales(at)
+
+    at.button(key="registrar_combo_cb001").click().run()
+    assert ok(at)
+    assert exito(at)[0].startswith("Combo cb001 registrado para Juan Pérez por S/ 107.50: ventas v031, v032.")
+    assert any(t.label == "Combos por registrar (0)" for t in at.tabs)
+    t = tabla(at)
+    registradas = t[t["combo"] == "cb001"]
+    assert sorted(zip(registradas["producto"], registradas["precio_unitario"])) == [
+        ("Mochila para laptop", 85.0),
+        ("Mouse inalámbrico", 22.5),
+    ]
+
+
+def test_descartar_un_combo_pendiente():
+    at = guardar_combinacion()
+    at.switch_page("paginas/registro_ventas.py").run()
+    at.button(key="descartar_combo_cb001").click().run()
+    assert ok(at) and "Combo cb001 descartado." in exito(at)
+    assert any("No hay combos por registrar" in i.value for i in at.info)
+
+
 def test_sin_categorias_pide_elegir_al_menos_una():
     at = abrir("pedido")
     at.get("button_group")[0].set_value([]).run()

@@ -5,6 +5,7 @@ import streamlit as st
 
 from interfaz import comun, estilo
 from interfaz.comun import dinero, nombre_categoria
+from ventas import administracion as admin
 from ventas.funcional import UMBRAL_FRECUENTE
 from ventas.logico import DIAS_INACTIVIDAD
 from ventas.modelos import ClienteFrecuente
@@ -270,6 +271,17 @@ def pagina_pedido() -> None:
                 "Cada combinación lleva al menos 2 productos: uno por cada categoría elegida "
                 "(con una sola categoría, dos de ella), sin repetir y sin pasarse del presupuesto."
             )
+        with st.container(border=True, key="panel_cliente_combo"):
+            clientes = {c.id_cliente: c.nombre for c in datos.clientes}
+            st.selectbox(
+                "Cliente",
+                sorted(clientes, key=clientes.get),
+                index=None,
+                format_func=clientes.get,
+                placeholder="Elige para quién es el combo",
+                key="combo_cliente",
+            )
+            st.caption("Con «Guardar combinación» el combo pasa a Administración › Ventas para registrarlo.")
     with derecha:
         if not elegidas:
             st.info("Elige al menos una categoría para ver combinaciones.", icon=":material/touch_app:")
@@ -306,6 +318,32 @@ def pagina_pedido() -> None:
                     text=f"Usa el {pedido.subtotal / presupuesto:.0%} del presupuesto",
                 )
                 st.markdown(filas_pedido_html(pedido.productos, vigentes, normal), unsafe_allow_html=True)
+                st.button(
+                    "Guardar combinación",
+                    key=f"guardar_combo_{numero}",
+                    icon=":material/add_shopping_cart:",
+                    on_click=_guardar_combo,
+                    args=(pedido.ids,),
+                    disabled=st.session_state.get("combo_cliente") is None,
+                    help="Primero elige el cliente a la izquierda.",
+                )
+
+
+def _guardar_combo(ids: tuple[str, ...]) -> None:
+    id_cliente = st.session_state.get("combo_cliente")
+    if id_cliente is None:
+        comun.avisar("error", "Elige el cliente antes de guardar la combinación.")
+        return
+    try:
+        combo = admin.guardar_combo(comun.repositorio(), id_cliente, list(ids), comun.fecha_referencia())
+    except ValueError as error:
+        comun.avisar("error", str(error))
+        return
+    nombre = next(c.nombre for c in comun.datos().clientes if c.id_cliente == id_cliente)
+    comun.avisar(
+        "exito",
+        f"Combinación {combo.id_combo} guardada para {nombre}. Regístrala en Administración › Ventas › Combos por registrar.",
+    )
 
 
 def filas_pedido_html(productos, vigentes, normal: dict[str, float]) -> str:
