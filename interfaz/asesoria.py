@@ -16,12 +16,12 @@ TONO_PRIORIDAD = {"alta": "alta", "media": "media", "baja": "baja"}
 FILTROS = {"Todos": None, "Reactivar": "reactivar", "Fidelizar": "fidelizar", "Complementar": "cruzar"}
 
 
-# Agenda de hoy
+# Agenda de fidelización
 def pagina_agenda() -> None:
     comun.mostrar_aviso()
     estilo.hero(
         "Asesoría",
-        "Agenda de hoy",
+        "Agenda de fidelización",
         "Los clientes a quienes conviene contactar hoy, ordenados por urgencia, con el motivo, "
         "el pedido sugerido y el mensaje listo para enviar.",
         "agenda",

@@ -93,7 +93,7 @@ def errores(at: AppTest) -> list[str]:
 def test_la_app_inicia_en_la_agenda_sin_errores():
     at = abrir()
     assert ok(at) and errores(at) == []
-    assert banner(at) == "Agenda de hoy"
+    assert banner(at) == "Agenda de fidelización"
 
 
 @pytest.mark.parametrize("pagina", PAGINAS)
@@ -635,7 +635,7 @@ def test_sin_ventas_la_agenda_y_el_resumen_explican_que_falta():
 @pytest.mark.parametrize(
     ("pagina", "seccion", "titulo"),
     [
-        ("agenda", "Asesoría", "Agenda de hoy"),
+        ("agenda", "Asesoría", "Agenda de fidelización"),
         ("pedido", "Asesoría · modo mostrador", "Arma mi pedido"),
         ("ofertas", "Asesoría", "Ofertas de temporada"),
         ("resumen", "Administración", "Resumen del negocio"),

@@ -46,7 +46,7 @@ st.sidebar.date_input(
 navegacion = st.navigation(
     {
         "Asesoría": [
-            st.Page("paginas/agenda.py", title="Agenda de hoy", icon=":material/event_note:", default=True),
+            st.Page("paginas/agenda.py", title="Agenda de fidelización", icon=":material/event_note:", default=True),
             st.Page("paginas/pedido.py", title="Arma mi pedido", icon=":material/shopping_cart:", url_path="pedido"),
             st.Page("paginas/ofertas.py", title="Ofertas de temporada", icon=":material/sell:", url_path="ofertas"),
         ],
