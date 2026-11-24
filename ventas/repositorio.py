@@ -12,8 +12,11 @@ import re
 import sqlite3
 import threading
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime
+from pathlib import Path
 
 from ventas.cargador import Datos, ErrorDatos
 from ventas.combos import Combo
@@ -197,6 +200,8 @@ class RepositorioSQLite(Repositorio):
         self._candado = threading.RLock()
         self._con = sqlite3.connect(ruta, check_same_thread=False)
         self._con.execute("PRAGMA foreign_keys = ON")
+        if ruta != ":memory:" and self._hay_migraciones_pendientes():
+            self._respaldar_antes_de_migrar(Path(ruta))
         with self._candado, self._con:
             self._con.executescript(_ESQUEMA)
         self._migrar_combos_sin_cliente()
@@ -205,11 +210,53 @@ class RepositorioSQLite(Repositorio):
         with self._candado, self._con:
             self._con.executescript(_DISPARADORES)
 
+    @contextmanager
+    def _transaccion(self) -> Iterator[None]:
+        """Todo o nada, también para CREATE/ALTER/DROP: el módulo sqlite3 confirma
+        esas sentencias al instante si no hay una transacción abierta, y una
+        migración fallida dejaría la base a medias (y la app sin arrancar)."""
+        with self._candado:
+            self._con.execute("BEGIN")
+            try:
+                yield
+            except BaseException:
+                self._con.rollback()
+                raise
+            self._con.commit()
+
+    def _hay_migraciones_pendientes(self) -> bool:
+        """¿La base es de una versión anterior y hay que transformarla?"""
+        tablas = {f[0] for f in self._con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+
+        def faltan(tabla: str, *columnas: str) -> bool:
+            if tabla not in tablas:
+                return False  # el esquema la crea completa
+            existentes = {f[1] for f in self._con.execute(f"PRAGMA table_info({tabla})")}
+            return not set(columnas) <= existentes
+
+        return (
+            "propuestas" in tablas
+            or faltan("combos", "nombre_cliente", "descuento", "descartado")
+            or faltan("combo_productos", "precio_centavos")
+            or faltan("productos", "costo_centavos", "stock")
+        )
+
+    def _respaldar_antes_de_migrar(self, ruta: Path) -> Path:
+        """Copia la base tal como está, junto a ella, antes de transformarla."""
+        destino = ruta.with_name(f"{ruta.stem}-antes-de-migrar-{datetime.now().astimezone():%Y%m%d-%H%M%S-%f}.db")
+        copia = sqlite3.connect(destino)
+        try:
+            with self._candado:
+                self._con.backup(copia)
+        finally:
+            copia.close()
+        return destino
+
     def _migrar_pedidos(self) -> None:
         """Los combos pasan a ser pedidos con descuento, precios fijos y estado; y
         cada propuesta guardada se convierte en un pedido enviado (con sus precios
         y su descuento). Después se borran las tablas de propuestas."""
-        with self._candado, self._con:
+        with self._transaccion():
             columnas = {f[1] for f in self._con.execute("PRAGMA table_info(combos)")}
             if "descuento" not in columnas:
                 self._con.execute(
@@ -254,7 +301,7 @@ class RepositorioSQLite(Repositorio):
     def _migrar_costo_y_stock(self) -> None:
         """Las bases anteriores no tenían costo ni stock: se agregan las columnas
         vacías (sin costo y sin control de stock), sin tocar las filas."""
-        with self._candado, self._con:
+        with self._transaccion():
             columnas = {fila[1] for fila in self._con.execute("PRAGMA table_info(productos)")}
             if "costo_centavos" not in columnas:
                 self._con.execute(
@@ -274,9 +321,9 @@ class RepositorioSQLite(Repositorio):
             if "nombre_cliente" in columnas:
                 return
             # Sin claves foráneas mientras se rehace: DROP TABLE no debe borrar en cascada.
-            self._con.execute("PRAGMA foreign_keys = OFF")
+            self._con.execute("PRAGMA foreign_keys = OFF")  # fuera de la transacción: dentro no tiene efecto
             try:
-                with self._con:
+                with self._transaccion():
                     self._con.execute(
                         """CREATE TABLE combos_nuevo (
                             id_combo       TEXT PRIMARY KEY,

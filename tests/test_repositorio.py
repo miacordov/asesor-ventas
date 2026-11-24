@@ -635,3 +635,89 @@ def test_una_base_sin_costo_ni_stock_se_migra_sin_perder_nada(tmp_path, datos):
     con_stock(repo, "p001", 2, costo=30.0)
     assert stock_de(repo, "p001") == 2
     repo.cerrar()
+
+
+# =====================================================================
+# Migraciones seguras
+# =====================================================================
+def _base_con_combos_viejos(ruta: str, datos, id_cliente: str = "c001") -> None:
+    import sqlite3
+
+    viejo = RepositorioSQLite(ruta)
+    viejo.reemplazar_todo(datos)
+    viejo.cerrar()
+    con = sqlite3.connect(ruta)
+    con.execute("PRAGMA foreign_keys = OFF")
+    con.executescript(
+        f"""
+        DROP TABLE combos;
+        CREATE TABLE combos (
+            id_combo   TEXT PRIMARY KEY,
+            id_cliente TEXT NOT NULL REFERENCES clientes (id_cliente) ON DELETE CASCADE,
+            fecha      TEXT NOT NULL
+        );
+        INSERT INTO combos VALUES ('cb001', '{id_cliente}', '2026-10-05');
+        INSERT INTO combo_productos (id_combo, id_producto, orden) VALUES ('cb001', 'p002', 0), ('cb001', 'p009', 1);
+        """
+    )
+    con.commit()
+    con.close()
+
+
+def _tablas(ruta: str) -> set[str]:
+    import sqlite3
+
+    con = sqlite3.connect(ruta)
+    try:
+        return {f[0] for f in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    finally:
+        con.close()
+
+
+def test_una_migracion_fallida_no_deja_la_base_a_medias(tmp_path, datos):
+    import sqlite3
+
+    ruta = str(tmp_path / "rota.db")
+    _base_con_combos_viejos(ruta, datos, id_cliente="c999")  # referencia rota: la migración falla
+    with pytest.raises(sqlite3.IntegrityError):
+        RepositorioSQLite(ruta)
+    assert "combos_nuevo" not in _tablas(ruta)
+    # Corregido el dato, el siguiente intento migra sin problemas.
+    con = sqlite3.connect(ruta)
+    con.execute("UPDATE combos SET id_cliente = 'c001'")
+    con.commit()
+    con.close()
+    repo = RepositorioSQLite(ruta)
+    assert [c.id_cliente for c in repo.cargar_combos()] == ["c001"]
+    repo.cerrar()
+
+
+def test_antes_de_migrar_se_respalda_la_base(tmp_path, datos):
+    ruta = tmp_path / "vieja.db"
+    _base_con_combos_viejos(str(ruta), datos)
+    RepositorioSQLite(str(ruta)).cerrar()
+    respaldos = sorted(tmp_path.glob("vieja-antes-de-migrar-*.db"))
+    assert len(respaldos) == 1
+    assert "nombre_cliente" not in _columnas(str(respaldos[0]), "combos")  # es la base tal como estaba
+    restaurado = RepositorioSQLite(str(respaldos[0]))  # y se puede abrir (y migrar) si hace falta volver
+    assert restaurado.cargar_todo() == datos
+    restaurado.cerrar()
+
+
+def test_sin_migraciones_pendientes_no_se_respalda(tmp_path, datos):
+    ruta = tmp_path / "al-dia.db"
+    repo = RepositorioSQLite(str(ruta))  # base nueva
+    repo.reemplazar_todo(datos)
+    repo.cerrar()
+    RepositorioSQLite(str(ruta)).cerrar()  # ya está al día
+    assert list(tmp_path.glob("*antes-de-migrar*")) == []
+
+
+def _columnas(ruta: str, tabla: str) -> set[str]:
+    import sqlite3
+
+    con = sqlite3.connect(ruta)
+    try:
+        return {f[1] for f in con.execute(f"PRAGMA table_info({tabla})")}
+    finally:
+        con.close()
